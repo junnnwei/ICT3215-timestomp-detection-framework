@@ -74,6 +74,86 @@ def stripPrefetchName(path):
 
     return basename.lower()
 
+def stripUSNJournalName(path):
+    basename = os.path.basename(path.strip().lower())
+    match = re.match(r"([a-z0-9_\-\.]+\.pf)", basename, re.I)
+    if match:
+        return match.group(1).lower()
+
+def stripUSNJournalINode(short):
+    # Extract inode from short description
+    match = re.search(r'\b(\d+)-\d+\b', short)
+    return match.group(1) if match else None
+
+# Special handling for linking UsnJournal entries
+def buildUSNJournalLookups(linkedEntities):
+    inode_to_key = {}
+    pf_to_key = {}
+
+    for key, value in linkedEntities.items():
+        for subheader, entries in value.items():
+            if subheader == "PE_COFF":
+                for entry in entries:
+                    inode = entry.get("inode")
+                    if inode:
+                        inode_to_key[inode] = key
+
+            elif subheader == "PREFETCH":
+                for entry in entries:
+                    prefetch_filename = entry.get("prefetch_filename")
+                    if prefetch_filename:
+                        pf_to_key.setdefault(prefetch_filename, set()).add(key)
+    
+    return inode_to_key, pf_to_key
+
+def linkUSNEntry(row, inode_to_key, pf_to_key):
+    src = row.get("source", "").lower().strip()
+    srctype = row.get("sourcetype", "").lower().strip()
+
+    if not (src == "file" and srctype == "ntfs usn change"):
+        return
+    
+    short = row.get("short", "").lower().strip()
+    original_filename = str(row.get("filename", "")).lower().strip()
+    macb = row.get("MACB", "").lower().strip()
+    datetime = row.get("datetime", "")
+    isValidTime = row.get("is_valid_time")
+
+    # Convert timestamp for readability
+    datetime_str = datetime.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(datetime) else None
+
+    logType = "$USN_JOURNAL"
+
+    # inode matching for PE/COFF files
+    inode = stripUSNJournalINode(short)
+    # print(f"Linking USN Entry: inode={inode}, short={short}")
+
+    if inode and inode in inode_to_key:
+        key = inode_to_key[inode]
+        # print(f"Matched USN Entry to key: {key} using inode: {inode})")
+        linkedEntities[key].setdefault(logType, []).append({
+            "datetime": datetime_str,
+            "original_filename": original_filename,
+            "isValidTime": isValidTime,
+            "short_description": short,
+            "macb": macb
+        })
+        return
+
+    # Prefetch filename matching
+    pf_name = stripUSNJournalName(short)
+    if pf_name in pf_to_key:
+        for key in pf_to_key[pf_name]:
+            # print(f"Matched USN Entry to key: {key} using prefetch filename: {pf_name})")
+            linkedEntities[key].setdefault(logType, []).append({    
+                "datetime": datetime_str,
+                "original_filename": original_filename,
+                "isValidTime": isValidTime,
+                "short_description": short,
+                "macb": macb,
+                "prefetch_name": pf_name
+            })
+
 def deriveLinkedEntities(row):
     """Derivation of linked entities ID based on analysis of sources"""
     src = row.get("source", "").lower().strip()
@@ -230,28 +310,114 @@ def deriveLinkedEntities(row):
                     "prefetch_filename": pf_name
                 })
 
-    # $UsnJournal
+    # $UsnJournal (deprecated due to extreme big-O complexity; replaced with buildUSNJournalLookups + linkUSNEntry):
+    # if src == "file" and srctype == "ntfs usn change":
+    #     logType = "$USN_JOURNAL"
+
+    # #     # Match using filename and inode criterion (our program targets .exe and .dlls, so we will use PE/COFF inode for linking
+    #     for key, value in linkedEntities.items():
+    #         for subheader, entries in value.items():
+    #             print(subheader, entries)
+    #             # This is for the file itself; not prefetch
+    #             if subheader == "PE_COFF":
+    #                 for entry in entries:
+    #                     if entry.get("inode") == stripUSNJournalINode(short) and stripUSNJournalName(short) in entry.get("original_filename"):
+    #                         # Found a match
+    #                         if logType not in linkedEntities[key]:
+    #                             linkedEntities[key][logType] = []
+                            
+    #                         linkedEntities[key][logType].append({
+    #                             "datetime": datetime_str,
+    #                             "original_filename": original_filename,
+    #                             "isValidTime": isValidTime,
+    #                             "short_description": short,
+    #                             "macb": macb
+    #                         })
+    #                         break  # No need to check further PE_COFF entries for this key
+                
+    #             # # Link prefetch-related entries in $USNJournal
+    #             if subheader == "PREFETCH":
+    #                 for entry in entries:
+    #                     # Example: CREATION_FUTURE.EXE-70488A55.pf 753134-3 USN_REASON_SECURITY_CHANGE (short entry) vs "prefetch_filename": "creation_future.exe-70488a55.pf" (in linkedEntities)
+    #                     if entry.get("prefetch_filename") == os.path.basename(short):
+    #                         # Found a match
+    #                         if logType not in linkedEntities[key]:
+    #                             linkedEntities[key][logType] = []
+                            
+    #                         linkedEntities[key][logType].append({
+    #                             "datetime": datetime_str,
+    #                             "original_filename": original_filename,
+    #                             "isValidTime": isValidTime,
+    #                             "short_description": short,
+    #                             "macb": macb,
+    #                             "pf_name": os.path.basename(short)
+    #                         })
+    #                         break  # No need to check further PREFETCH entries for this key
 
 if __name__ == "__main__":
-    if checkSourceFiles():
-        df = pd.read_csv('source/timeline.csv', low_memory=False)
-        # print(df.columns)
-        # print(df.head())
-
-        # Processing: removal of browser noise
-        df = df[~df["source"].isin(["WEBHIST"])]
-
-        # Process timestamps & mark the invalid ones
-        df = processTimestamps(df)
-
-        df.apply(deriveLinkedEntities, axis=1)
-        # print(linkedEntities)
-
-        # For the sake of checking: output to file
-        output_path = os.path.join('source', 'linked_entities.json')
-
-        # Convert to JSON and write
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
+    while True:
+        print("==================================================")
+        print("ICT3215 TIMESTOMP DETECTION FRAMEWORK".center(50))
+        print("==================================================")
+        electedOption = input("1. Process timeline.csv and derive linked entities\n2. Parse YAML Rules & Validate\n3. Exit\nEnter choice (1-3): ").strip()
         
-        print(f"[+] Linked entities saved to: {output_path}")
+        if electedOption == '1':
+            if checkSourceFiles():
+                print("[PARSING] Parsing timeline.")
+                df = pd.read_csv('source/timeline.csv', low_memory=False)
+                # print(df.columns)
+                # print(df.head())
+
+                # Processing: removal of browser noise
+                print("[CLEANING] Removing browser history entries.")
+                df = df[~df["source"].isin(["WEBHIST"])]
+
+                # Process timestamps & mark the invalid ones
+                print("[PROCESSING] Proessing timestamps.")
+                df = processTimestamps(df)
+
+                # Build LinkedEntities without USNJournal first
+                print("[LINKING] Building lniked entities.")
+                for _, row in df.iterrows():
+                    deriveLinkedEntities(row)
+
+                # Build O(1) lookups for USN linking
+                inode_to_key, pf_to_key = buildUSNJournalLookups(linkedEntities)
+                # print(inode_to_key)
+                # print(pf_to_key)
+
+                # Link USN rows using lookups
+                usn_mask = (df["source"].str.lower() == "file") & (df["sourcetype"].str.lower() == "ntfs usn change")
+                usn_df = df[usn_mask]
+                # print(usn_df)
+
+                for _, row in usn_df.iterrows():
+                    linkUSNEntry(row, inode_to_key, pf_to_key)
+
+                # sumOfUSNEntries = 0
+                # for key, value in linkedEntities.items():
+                #     if "$USN_JOURNAL" in value:
+                #         print(value)
+                #         sumOfUSNEntries += 1
+                
+                # print(f"[DEBUG] Entities with $USN_JOURNAL: {sumOfUSNEntries}")
+
+                # For the sake of checking: output to file
+                print("[WRITING] Writing linked entities to JSON file.")
+                output_path = os.path.join('source', 'linked_entities.json')
+
+                # Convert to JSON and write to file
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
+                
+                print(f"[+] Linked entities saved to: {output_path}")
+        
+        elif electedOption == '2':
+            print("YAML Rules & Validation feature is under development.")
+        
+        elif electedOption == '3':
+            print("Exiting program.")
+            break
+
+        else:
+            print("Invalid option. Please select 1, 2, or 3.")
