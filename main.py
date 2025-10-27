@@ -1,9 +1,10 @@
 import pandas as pd
-import os, json, re, yaml
+import os, json, re, yaml, networkx, datetime
 
 # Global Declaration
 linkedEntities = {}
 
+# Function: Check Plaso timeline CSV file presence
 def checkSourceFiles():
     # Ensure 'source/' directory exists
     if not os.path.exists('source'):
@@ -20,6 +21,7 @@ def checkSourceFiles():
         print("'timeline.csv' not found inside 'source/'. Please place it there before running this script.")
         return False
 
+# Function: Process the timestamps & include a validity flag
 def processTimestamps(df):
     combined = df["date"].astype(str).str.strip() + " " + df["time"].astype(str).str.strip()
 
@@ -38,9 +40,9 @@ def processTimestamps(df):
         "is_valid_time"
     ] = False
 
-
     return df
 
+# Function: Normalize file path for keying
 def normalizeKey(path):
     """Normalize a file path to a consistent format for keying"""
     # Lowercase
@@ -60,6 +62,7 @@ def normalizeKey(path):
     
     return path.strip()
 
+# Function: Obtain prefetch naming without hash and .pf extension
 def stripPrefetchName(path):
     basename = os.path.basename(path.strip())
 
@@ -85,7 +88,7 @@ def stripUSNJournalINode(short):
     match = re.search(r'\b(\d+)-\d+\b', short)
     return match.group(1) if match else None
 
-# Special handling for linking UsnJournal entries
+# Function: special handling for linking UsnJournal entries
 def buildUSNJournalLookups(linkedEntities):
     inode_to_key = {}
     pf_to_key = {}
@@ -106,6 +109,7 @@ def buildUSNJournalLookups(linkedEntities):
     
     return inode_to_key, pf_to_key
 
+# Function: link UsnJournal entry to existing linkedEntities
 def linkUSNEntry(row, inode_to_key, pf_to_key):
     src = row.get("source", "").lower().strip()
     srctype = row.get("sourcetype", "").lower().strip()
@@ -154,6 +158,7 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
                 "prefetch_name": pf_name
             })
 
+# Function: Form linked entities (excl. $UsnJournal)
 def deriveLinkedEntities(row):
     """Derivation of linked entities ID based on analysis of sources"""
     src = row.get("source", "").lower().strip()
@@ -354,12 +359,215 @@ def deriveLinkedEntities(row):
     #                         })
     #                         break  # No need to check further PREFETCH entries for this key
 
+# Function: Parse the linked entities from JSON
+def parseLinkedEntities():
+    with open(os.path.join('source', 'linked_entities.json'), 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    return data
+
+# Function: Parse power on/off events from JSON
+def parsePowerEvents():
+    path = os.path.join('source', 'power_events.json')
+    if not os.path.exists(path):
+        print("[-] power_events.json not found.")
+        return []
+
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    on_events = data.get("on", [])
+    off_events = data.get("off", [])
+
+    # Deduplicate based on timestamp
+    on_events = list({e["timestamp"]: e for e in on_events if "timestamp" in e}.values())
+    off_events = list({e["timestamp"]: e for e in off_events if "timestamp" in e}.values())
+
+    # Sort by timestamp
+    on_events = sorted(on_events, key=lambda x: x["timestamp"])
+    off_events = sorted(off_events, key=lambda x: x["timestamp"])
+
+    # Parse timestamp format like "09/14/2025T06:32:25"
+    def parse_ts(ts):
+        ts = ts.strip().replace("T", " ")
+        try:
+            return pd.to_datetime(ts, format="%m/%d/%Y %H:%M:%S", errors="coerce")
+        except Exception:
+            return pd.to_datetime(ts, errors="coerce")
+
+    # Convert and store parsed timestamps
+    on_times = [(parse_ts(e["timestamp"]), e.get("code", "")) for e in on_events]
+    off_times = [(parse_ts(e["timestamp"]), e.get("code", "")) for e in off_events]
+    # print(f"On Time: {on_times}")
+    # print(f"Off Time: {off_times}")
+
+    # Pair each shutdown → next startup
+    boot_sessions = []
+    for off_time, off_code in off_times:
+        # Find the first startup event *after* this shutdown
+        next_on = next(((t, c) for t, c in on_times if t > off_time), None)
+        if next_on:
+            on_time, on_code = next_on
+            boot_sessions.append({
+                "next_boot_start": on_time,
+                "previous_boot_end": off_time,
+                "on_code": on_code,
+                "off_code": off_code
+            })
+
+    return boot_sessions
+
+
+# Function: Parse YAML Rules
+def parseYAMLRules(yaml_path):
+    if not os.path.exists(yaml_path):
+        print(f"YAML rules file not found: {yaml_path}")
+        return None
+
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        rules = yaml.safe_load(f)
+
+    return rules.get("rules", [])
+
+def get_datetime(linkedEntities, srcLog, macb_filter=None):
+    # MACB attributes are file system timestamps that record a file's Modified, Accessed, Changed (metadata), and Birth (creation) times.
+    entries = linkedEntities.get(srcLog, [])
+    valid_times = []
+
+    for e in entries:
+        dt = e.get("datetime")
+        
+        # Skip if MACB filter is specified and doesn't match
+        if macb_filter:
+            # Apply MACB filter
+            macb = e.get("macb", "")
+            if macb_filter not in macb:
+                continue
+        
+        # If datetime = null or isValidTime = false, skip
+        if not dt or not e.get("isValidTime"):
+            # print("dateTime is NULL or isValidTime is false. Skipping.")
+            continue
+        
+        # print(dt)
+        valid_times.append(pd.to_datetime(dt))
+    
+    return valid_times
+
+# Function: Evaluate Conditions
+def evaluate_condition(condition, linkedEntities, boot_sessions):
+    condition = condition.strip()
+    macb_filter = None
+
+    # Extract MACB filter if necessary
+    macb_match = re.search(r"macb=['\"]([macb\.\-]+)['\"]", condition)
+    if macb_match:
+        macb_filter = macb_match.group(1)
+    
+    # --- RULE HANDLER SECTION ---
+    # Major Rule 1 Handler:
+    # Example:
+    # - datetime($MFT) not between (BOOT_SESSIONS)
+    # - datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS) [or any other MACB variants, m.c. tested here since it matches an event in our linkedEntities]
+    if "not between (BOOT_SESSIONS)" in condition:
+        src_match = re.search(r"datetime\(([^),]+)", condition)
+        if not src_match:
+            return {"violated": False}
+
+        srcLog = src_match.group(1).strip()
+        timestamps = get_datetime(linkedEntities, srcLog, macb_filter)
+        # print(f"srcLog: {srcLog}, timestamps: {timestamps}, macb_filter: {macb_filter}")
+
+        if not timestamps or not boot_sessions:
+            return {"violated": False}
+        
+        # Iterate through every matched timestamp & check against boot sessions
+        for ts in timestamps:
+            outOfSession = any((pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])) for session in boot_sessions)
+            
+            # Found a timestamp outside boot sessions
+            if outOfSession:
+                # Find closest power-off context for context reporting
+                closest_session = min(boot_sessions, key=lambda s: abs((ts - pd.to_datetime(s["previous_boot_end"])).total_seconds()))
+                next_boot_start = pd.to_datetime(closest_session.get("next_boot_start"))
+                previous_boot_end = pd.to_datetime(closest_session.get("previous_boot_end"))
+                on_code = closest_session.get("on_code", "")
+                off_code = closest_session.get("off_code", "")
+            
+                return {
+                    "violated": True,
+                    "violating_event": {
+                        "src": srcLog,
+                        "timestamp": str(ts),
+                        "macb_filter": macb_filter or "N/A",
+                    },
+                    "context": {
+                        "boot_session": {
+                            "next_boot_start": str(next_boot_start),
+                            "previous_boot_end": str(previous_boot_end),
+                            "on_code": on_code,
+                            "off_code": off_code,
+                        },
+                        "description": (
+                            f"File timestamp {ts} falls outside the last known boot session (Previous Power Off @ {previous_boot_end} (Event Code: {off_code}); Next Power On @ {next_boot_start} (Event Code: {on_code})."
+                        )
+                    }
+                }
+            
+        # All timestamps are within boot sessions
+        return {"violated": False}
+
+    # --- Default return for unhandled rule types ---
+    return {"violated": False}
+    
+# Function: Rule Evaluation
+# To be implemented: ensure rules are structurally correct and all fields can be obtained
+def evaluateRules(yamlRules, linkedEntities, boot_sessions):
+    ruleViolations = []
+    for key, evidence in linkedEntities.items():
+        # For testing purposes, only evaluate a specific key
+        if key == "users/timel/desktop/cases/creation_future.exe":
+            # print(key, evidence)
+            for rule in yamlRules:
+                logic = rule.get("logic", {})
+                triggeredInfo = []
+
+                if "any_of" in logic:
+                    for condition in logic["any_of"]:
+                        result = evaluate_condition(condition["condition"], evidence, boot_sessions)
+                        if result.get("violated"):
+                            triggeredInfo.append(result)
+
+                elif "all_of" in logic:
+                    allResults = []
+                    for condition in logic["all_of"]:
+                        result = evaluate_condition(condition["condition"], evidence, boot_sessions)
+                        allResults.append(result)
+
+                    # Check if all conditions are violated
+                    if all(res.get("violated") for res in allResults):
+                        triggeredInfo.extend(allResults)
+
+            if triggeredInfo:
+                ruleViolations.append({
+                    "entity": key,
+                    "rule_id": rule.get("id"),
+                    "rule_name": rule.get("name"),
+                    "severity": rule.get("severity"),
+                    "explanation": rule.get("explanation"),
+                    "violations": triggeredInfo
+                })
+
+    print(json.dumps(ruleViolations, indent=4))
+    return ruleViolations
+
+
 if __name__ == "__main__":
     while True:
         print("==================================================")
         print("ICT3215 TIMESTOMP DETECTION FRAMEWORK".center(50))
         print("==================================================")
-        electedOption = input("1. Process timeline.csv and derive linked entities\n2. Parse YAML Rules & Validate\n3. Exit\nEnter choice (1-3): ").strip()
+        electedOption = input("1. Process timeline.csv and derive linked entities\n2. YAML Rule Builder (GUI)\n3. Parse YAML Rules & Validate\n4. Exit\nEnter choice (1-4): ").strip()
         
         if electedOption == '1':
             if checkSourceFiles():
@@ -377,7 +585,7 @@ if __name__ == "__main__":
                 df = processTimestamps(df)
 
                 # Build LinkedEntities without USNJournal first
-                print("[LINKING] Building lniked entities.")
+                print("[LINKING] Building linked entities.")
                 for _, row in df.iterrows():
                     deriveLinkedEntities(row)
 
@@ -411,11 +619,41 @@ if __name__ == "__main__":
                     json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
                 
                 print(f"[+] Linked entities saved to: {output_path}")
+
+                print(f"[+] Deriving Windows events.")
+                
+                # WuHao write your function/code here for deriving Windows events
+
+                print(f"[+] Windows events derived successfully.")
         
         elif electedOption == '2':
-            print("YAML Rules & Validation feature is under development.")
-        
+            print("Option 2 selected. (Rule builder functionality to be implemented)")
+
         elif electedOption == '3':
+            # Read linkedEntities
+            print("[+] Parsing linked entities from JSON.")
+            linkedEntities = parseLinkedEntities()
+            print("[+] Linked entities parsed successfully.")
+
+            # Parse power on/off events
+            print("[+] Parsing power on/off events.")
+            boot_sessions = parsePowerEvents()
+            # print(boot_sessions)
+
+            # Parse YAML rules for detection
+            print("[+] Parsing YAML Rules.")
+            yamlRules = parseYAMLRules('timestomp_rules.yaml')
+
+            if yamlRules is None:
+                print("[-] Failed to parse YAML rules. Please check the file.")
+                continue
+
+            print(f"[YAML PARSER] {len(yamlRules)} rules parsed successfully.")
+
+            # Validate linked entities against rules
+            evaluateRules(yamlRules, linkedEntities, boot_sessions)
+        
+        elif electedOption == '4':
             print("Exiting program.")
             break
 
