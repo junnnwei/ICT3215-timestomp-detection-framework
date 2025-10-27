@@ -483,16 +483,17 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
         
         # Iterate through every matched timestamp & check against boot sessions
         for ts in timestamps:
-            outOfSession = any((pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])) for session in boot_sessions)
+            # outOfSession = any((pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])) for session in boot_sessions)
+            offendingSession = next((session for session in boot_sessions if pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])), None)
             
             # Found a timestamp outside boot sessions
-            if outOfSession:
+            # if outOfSession:
+            if offendingSession:
                 # Find closest power-off context for context reporting
-                closest_session = min(boot_sessions, key=lambda s: abs((ts - pd.to_datetime(s["previous_boot_end"])).total_seconds()))
-                next_boot_start = pd.to_datetime(closest_session.get("next_boot_start"))
-                previous_boot_end = pd.to_datetime(closest_session.get("previous_boot_end"))
-                on_code = closest_session.get("on_code", "")
-                off_code = closest_session.get("off_code", "")
+                next_boot_start = pd.to_datetime(offendingSession.get("next_boot_start"))
+                previous_boot_end = pd.to_datetime(offendingSession.get("previous_boot_end"))
+                on_code = offendingSession.get("on_code", "")
+                off_code = offendingSession.get("off_code", "")
             
                 return {
                     "violated": True,
