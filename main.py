@@ -31,7 +31,7 @@ def processTimestamps(df):
         format="%m/%d/%Y %H:%M:%S",
         errors="coerce"
     )
-
+    
     # Flag invalid or placeholder (1601) timestamps
     df["is_valid_time"] = True
 
@@ -315,50 +315,6 @@ def deriveLinkedEntities(row):
                     "prefetch_filename": pf_name
                 })
 
-    # $UsnJournal (deprecated due to extreme big-O complexity; replaced with buildUSNJournalLookups + linkUSNEntry):
-    # if src == "file" and srctype == "ntfs usn change":
-    #     logType = "$USN_JOURNAL"
-
-    # #     # Match using filename and inode criterion (our program targets .exe and .dlls, so we will use PE/COFF inode for linking
-    #     for key, value in linkedEntities.items():
-    #         for subheader, entries in value.items():
-    #             print(subheader, entries)
-    #             # This is for the file itself; not prefetch
-    #             if subheader == "PE_COFF":
-    #                 for entry in entries:
-    #                     if entry.get("inode") == stripUSNJournalINode(short) and stripUSNJournalName(short) in entry.get("original_filename"):
-    #                         # Found a match
-    #                         if logType not in linkedEntities[key]:
-    #                             linkedEntities[key][logType] = []
-                            
-    #                         linkedEntities[key][logType].append({
-    #                             "datetime": datetime_str,
-    #                             "original_filename": original_filename,
-    #                             "isValidTime": isValidTime,
-    #                             "short_description": short,
-    #                             "macb": macb
-    #                         })
-    #                         break  # No need to check further PE_COFF entries for this key
-                
-    #             # # Link prefetch-related entries in $USNJournal
-    #             if subheader == "PREFETCH":
-    #                 for entry in entries:
-    #                     # Example: CREATION_FUTURE.EXE-70488A55.pf 753134-3 USN_REASON_SECURITY_CHANGE (short entry) vs "prefetch_filename": "creation_future.exe-70488a55.pf" (in linkedEntities)
-    #                     if entry.get("prefetch_filename") == os.path.basename(short):
-    #                         # Found a match
-    #                         if logType not in linkedEntities[key]:
-    #                             linkedEntities[key][logType] = []
-                            
-    #                         linkedEntities[key][logType].append({
-    #                             "datetime": datetime_str,
-    #                             "original_filename": original_filename,
-    #                             "isValidTime": isValidTime,
-    #                             "short_description": short,
-    #                             "macb": macb,
-    #                             "pf_name": os.path.basename(short)
-    #                         })
-    #                         break  # No need to check further PREFETCH entries for this key
-
 # Function: Parse the linked entities from JSON
 def parseLinkedEntities():
     with open(os.path.join('source', 'linked_entities.json'), 'r', encoding='utf-8') as f:
@@ -454,15 +410,31 @@ def get_datetime(linkedEntities, srcLog, macb_filter=None):
     
     return valid_times
 
+# Function: Extract MACB Attributes defined in the rule YAML file from either left, right, or both, only applicable to conditions without "BOOT_SESSIONS"
+# BOOT_SESSIONS conditions will be handled separately, and within rule builder tool, it shouldn't be created to have any operators
+def extract_macb_filters(condition: str):
+    # Split once on a comparison operator (keeps operator too)
+    parts = re.split(r'\s*(<=|>=|==|!=|<|>)\s*', condition, maxsplit=1)
+    if len(parts) < 3:
+        return None, None  # malformed
+
+    left_expr, op, right_expr = parts
+
+    # Regex to extract macb='...' or macb="..."
+    pattern = r"macb=['\"]([MACBmacb\.\-]+)['\"]"
+
+    left_match = re.search(pattern, left_expr)
+    right_match = re.search(pattern, right_expr)
+
+    left_macb_filter = left_match.group(1) if left_match else None
+    right_macb_filter = right_match.group(1) if right_match else None
+
+    return left_macb_filter, right_macb_filter
+
 # Function: Evaluate Conditions
 def evaluate_condition(condition, linkedEntities, boot_sessions):
     condition = condition.strip()
     macb_filter = None
-
-    # Extract MACB filter if necessary
-    macb_match = re.search(r"macb=['\"]([macb\.\-]+)['\"]", condition)
-    if macb_match:
-        macb_filter = macb_match.group(1)
     
     # --- RULE HANDLER SECTION ---
     # Major Rule 1 Handler:
@@ -470,11 +442,18 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
     # - datetime($MFT) not between (BOOT_SESSIONS)
     # - datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS) [or any other MACB variants, m.c. tested here since it matches an event in our linkedEntities]
     if "not between (BOOT_SESSIONS)" in condition:
+        # Extract MACB filter if necessary
+        macb_match = re.search(r"macb=['\"]([macb\.\-]+)['\"]", condition)
+        if macb_match:
+            macb_filter = macb_match.group(1)
+                
         src_match = re.search(r"datetime\(([^),]+)", condition)
         if not src_match:
             return {"violated": False}
 
         srcLog = src_match.group(1).strip()
+
+        # Theoretically unreachable, just error handling
         timestamps = get_datetime(linkedEntities, srcLog, macb_filter)
         # print(f"srcLog: {srcLog}, timestamps: {timestamps}, macb_filter: {macb_filter}")
 
@@ -517,6 +496,40 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
             
         # All timestamps are within boot sessions
         return {"violated": False}
+
+    # Major Rule 2 Handler:
+    else:
+        src_match = re.findall(r"datetime\(([^),]+)", condition)
+
+        # Technically unreachable, just error handling
+        if len(src_match) < 2:
+            return {"violated": False}
+
+        left_entity = src_match[0].strip()
+        right_entity = src_match[1].strip()
+
+        # Extract MACB filter
+        macb_match = re.findall(r"macb=['\"]([macb\.\-]+)['\"]", condition)
+        left_macb_filter, right_macb_filter = extract_macb_filters(condition)
+
+        left_timestamps = get_datetime(linkedEntities, left_entity, left_macb_filter)
+        right_timestamps = get_datetime(linkedEntities, right_entity, right_macb_filter)
+
+        # Extract comparison operator
+        op_match = re.search(r"datetime\([^)]*\)\s*([<>!=]+)\s*datetime\([^)]*\)", condition)
+        op = op_match.group(1).strip() if op_match else None
+        
+        # Technically unreachable, just error handling
+        if not op:
+            return {"violated": False}
+    
+        # print(f"Operator: {op}")
+
+        # Theoretically unreachable, just error handling
+        if not left_timestamps or not right_timestamps:
+            return {"violated": False}
+
+        print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
 
     # --- Default return for unhandled rule types ---
     return {"violated": False}
