@@ -17,25 +17,25 @@ rules:
         - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a..')"
       explanation: "Execution evidence predates file creation - possible timestomping."
 
-  - id: TS002
-    name: "Modification-During-Power-Off"
-    severity: "Critical"
-    entities:
-      - "$MFT"
-      - "BOOT_SESSIONS"
-    logic:
-      all_of:
-        - condition: "datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS)"
-        - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
-      explanation: "File modified when system was powered off."
+  # - id: TS002
+  #   name: "Modification-During-Power-Off"
+  #   severity: "Critical"
+  #   entities:
+  #     - "$MFT"
+  #     - "BOOT_SESSIONS"
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS)"
+  #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
+  #     explanation: "File modified when system was powered off."
 
-  - id: TS003
-    name: "Prefetch-Execution-During-Power-Off"
-    severity: "High"
-    entities:
-      - "PREFETCH"
-      - "BOOT_SESSIONS"
-    logic:
-      all_of:
-        - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
-      explanation: "File executed (detected via prefetch) when system was powered off."
+  # - id: TS003
+  #   name: "Prefetch-Execution-During-Power-Off"
+  #   severity: "High"
+  #   entities:
+  #     - "PREFETCH"
+  #     - "BOOT_SESSIONS"
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
+  #     explanation: "File executed (detected via prefetch) when system was powered off."

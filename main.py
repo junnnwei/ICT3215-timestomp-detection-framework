@@ -408,6 +408,9 @@ def get_datetime(linkedEntities, srcLog, macb_filter=None):
         # print(dt)
         valid_times.append(pd.to_datetime(dt))
     
+    # Sort chronologically
+    valid_times.sort()
+
     return valid_times
 
 # Function: Extract MACB Attributes defined in the rule YAML file from either left, right, or both, only applicable to conditions without "BOOT_SESSIONS"
@@ -476,6 +479,7 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
             
                 return {
                     "violated": True,
+                    "boot_sessions_involvement": True,
                     "violating_event": {
                         "src": srcLog,
                         "timestamp": str(ts),
@@ -522,14 +526,45 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
         # Technically unreachable, just error handling
         if not op:
             return {"violated": False}
+        
+        # Comparison Portion
+        cmp_map = {
+            "<": lambda l, r: l < r,
+            "<=": lambda l, r: l <= r,
+            ">": lambda l, r: l > r,
+            ">=": lambda l, r: l >= r,
+            "==": lambda l, r: l == r,
+            "!=": lambda l, r: l != r,
+        }
     
         # print(f"Operator: {op}")
 
         # Theoretically unreachable, just error handling
         if not left_timestamps or not right_timestamps:
             return {"violated": False}
+        
+        # print(f"{left_timestamps[0]} {op} {right_timestamps[0]} → {cmp_map[op](left_timestamps[0], right_timestamps[0])}")
+        # print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
 
-        print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
+        if cmp_map[op](left_timestamps[0], right_timestamps[0]):
+            return {
+                "violated": True,
+                "boot_sessions_involvement": False,
+                "violating_event": {
+                    "left_src": left_entity,
+                    "left_timestamp": str(left_timestamps[0]),
+                    "left_macb_filter": left_macb_filter or "N/A",
+                    "right_src": right_entity,
+                    "right_timestamp": str(right_timestamps[0]),
+                    "right_macb_filter": right_macb_filter or "N/A",
+                    "operator": op
+                },
+                "context": {
+                    "description": (
+                        f"Condition violated: {left_entity} (MACB: {left_macb_filter}) timestamp {left_timestamps[0]} {op} {right_entity} (MACB: {right_macb_filter}) timestamp {right_timestamps[0]}"
+                    )
+                }
+            }
 
     # --- Default return for unhandled rule types ---
     return {"violated": False}
@@ -562,15 +597,15 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
                     if all(res.get("violated") for res in allResults):
                         triggeredInfo.extend(allResults)
 
-            if triggeredInfo:
-                ruleViolations.append({
-                    "entity": key,
-                    "rule_id": rule.get("id"),
-                    "rule_name": rule.get("name"),
-                    "severity": rule.get("severity"),
-                    "explanation": rule.get("explanation"),
-                    "violations": triggeredInfo
-                })
+                if triggeredInfo:
+                    ruleViolations.append({
+                        "entity": key,
+                        "rule_id": rule.get("id"),
+                        "rule_name": rule.get("name"),
+                        "severity": rule.get("severity"),
+                        "explanation": rule.get("explanation"),
+                        "violations": triggeredInfo
+                    })
 
     print(json.dumps(ruleViolations, indent=4))
     return ruleViolations
