@@ -317,7 +317,7 @@ def deriveLinkedEntities(row):
 
 # Function: Parse the linked entities from JSON
 def parseLinkedEntities():
-    with open(os.path.join('source', 'linked_entities.json'), 'r', encoding='utf-8') as f:
+    with open(os.path.join('source', 'linked_entities_amend.json'), 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     return data
@@ -531,7 +531,9 @@ def evalCondition(condition, linkedEntities, boot_sessions):
         left_macb_filter, right_macb_filter = extract_macb_filters(condition)
 
         left_timestamps = get_datetime(linkedEntities, left_entity, left_macb_filter)
+        # print(f"Left: {left_timestamps}")
         right_timestamps = get_datetime(linkedEntities, right_entity, right_macb_filter)
+        # print(f"Right: {right_timestamps}")
 
         if not left_timestamps:
             return {
@@ -614,14 +616,17 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
             for rule in yamlRules:
                 logic = rule.get("logic", {})
                 triggeredInfo = []
+                inconclusiveInfo = []
 
                 if "any_of" in logic:
                     for condition in logic["any_of"]:
                         result = evalCondition(condition["condition"], evidence, boot_sessions)
                         if result.get("violated"):
                             triggeredInfo.append(result)
-                        else:
-                            triggeredInfo.append(result)
+
+                        # To be done: handle inconclusive separately
+                        elif result.get("inconclusive") and result not in inconclusiveInfo:
+                            inconclusiveInfo.append(result)
 
                 elif "all_of" in logic:
                     allResults = []
@@ -632,15 +637,21 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
                     # Check if all conditions are violated
                     if all(res.get("violated") for res in allResults):
                         triggeredInfo.extend(allResults)
+                    
+                    # Collect inconclusive results
+                    for res in allResults:
+                        if res.get("inconclusive") and res not in inconclusiveInfo:
+                            inconclusiveInfo.append(res)
 
-                if triggeredInfo:
+                if triggeredInfo or inconclusiveInfo:
                     ruleViolations.append({
                         "entity": key,
                         "rule_id": rule.get("id"),
                         "rule_name": rule.get("name"),
                         "severity": rule.get("severity"),
                         "explanation": rule.get("explanation"),
-                        "violations": triggeredInfo
+                        "violations": triggeredInfo if triggeredInfo else None,
+                        "inconclusive": inconclusiveInfo if inconclusiveInfo else None
                     })
 
     print(json.dumps(ruleViolations, indent=4))
