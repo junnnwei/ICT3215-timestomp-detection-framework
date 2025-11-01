@@ -1,33 +1,33 @@
 rules:
-  - id: TS001
-    name: "Execution-before-Creation"
-    description: "File executed before any creation evidence exists."
-    severity: "High"
+  # - id: TS001
+  #   name: "Execution-before-Creation"
+  #   description: "File executed before any creation evidence exists."
+  #   severity: "High"
 
-    entities:
-      - "$MFT"
-      - "PREFETCH"
-      - "AMCACHE"
-      - "APPCOMPATCACHE"
-
-    logic:
-      any_of:
-        - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
-        - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
-        - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a..')"
-      explanation: "Execution evidence predates file creation - possible timestomping."
-
-  # - id: TS002
-  #   name: "Modification-During-Power-Off"
-  #   severity: "Critical"
   #   entities:
   #     - "$MFT"
-  #     - "BOOT_SESSIONS"
+  #     - "PREFETCH"
+  #     - "AMCACHE"
+  #     - "APPCOMPATCACHE"
+
   #   logic:
-  #     all_of:
-  #       - condition: "datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS)"
-  #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
-  #     explanation: "File modified when system was powered off."
+  #     any_of:
+  #       - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a..')"
+  #     explanation: "Execution evidence predates file creation - possible timestomping."
+
+  - id: TS002
+    name: "Modification-During-Power-Off"
+    severity: "Critical"
+    entities:
+      - "$MFT"
+      - "BOOT_SESSIONS"
+    logic:
+      any_of:
+        - condition: "datetime($MFT, macb='...b') not between (BOOT_SESSIONS)"
+        - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
+      explanation: "File modified when system was powered off."
 
   # - id: TS003
   #   name: "Prefetch-Execution-During-Power-Off"
@@ -39,3 +39,21 @@ rules:
   #     all_of:
   #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
   #     explanation: "File executed (detected via prefetch) when system was powered off."
+
+  # - id: TS004
+  #   name: "Execution-before-Creation"
+  #   description: "File executed before any creation evidence exists."
+  #   severity: "High"
+
+  #   entities:
+  #     - "$MFT"
+  #     - "PREFETCH"
+  #     - "AMCACHE"
+  #     - "APPCOMPATCACHE"
+
+  #   logic:
+  #     any_of:
+  #       - condition: "datetime(PREFETCH) < datetime($MFT, macb='macb')"
+  #       - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b, m.c.')"
+  #       - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a.., m.c.')"
+  #     explanation: "Execution evidence predates file creation - possible timestomping."

@@ -435,7 +435,7 @@ def extract_macb_filters(condition: str):
     return left_macb_filter, right_macb_filter
 
 # Function: Evaluate Conditions
-def evaluate_condition(condition, linkedEntities, boot_sessions):
+def evalCondition(condition, linkedEntities, boot_sessions):
     condition = condition.strip()
     macb_filter = None
     
@@ -451,17 +451,31 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
             macb_filter = macb_match.group(1)
                 
         src_match = re.search(r"datetime\(([^),]+)", condition)
-        if not src_match:
-            return {"violated": False}
-
         srcLog = src_match.group(1).strip()
 
         # Theoretically unreachable, just error handling
         timestamps = get_datetime(linkedEntities, srcLog, macb_filter)
         # print(f"srcLog: {srcLog}, timestamps: {timestamps}, macb_filter: {macb_filter}")
 
-        if not timestamps or not boot_sessions:
-            return {"violated": False}
+        if not timestamps:
+            return {
+                "violated": False,
+                "inconclusive": True,
+                "reason": "timestamps_not_found",
+                "context": {
+                    "description": f"Source: {srcLog} with MACB='{macb_filter}' not found."
+                }
+            }
+        
+        if not boot_sessions:
+            return {
+                "violated": False,
+                "inconclusive": True,
+                "reason": "boot_sessions_not_found",
+                "context": {
+                    "description": f"Boot sessions missing."
+                }
+            }
         
         # Iterate through every matched timestamp & check against boot sessions
         for ts in timestamps:
@@ -518,6 +532,26 @@ def evaluate_condition(condition, linkedEntities, boot_sessions):
 
         left_timestamps = get_datetime(linkedEntities, left_entity, left_macb_filter)
         right_timestamps = get_datetime(linkedEntities, right_entity, right_macb_filter)
+
+        if not left_timestamps:
+            return {
+                "violated": False,
+                "inconclusive": True,
+                "reason": "timestamps_not_found",
+                "context": {
+                    "description": f"Source: {left_entity} with MACB='{left_macb_filter}' not found."
+                }
+            }
+        
+        if not right_timestamps:
+            return {
+                "violated": False,
+                "inconclusive": True,
+                "reason": "timestamps_not_found",
+                "context": {
+                    "description": f"Source: {right_entity} with MACB='{right_macb_filter}' not found."
+                }
+            }
 
         # Extract comparison operator
         op_match = re.search(r"datetime\([^)]*\)\s*([<>!=]+)\s*datetime\([^)]*\)", condition)
@@ -583,14 +617,16 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
 
                 if "any_of" in logic:
                     for condition in logic["any_of"]:
-                        result = evaluate_condition(condition["condition"], evidence, boot_sessions)
+                        result = evalCondition(condition["condition"], evidence, boot_sessions)
                         if result.get("violated"):
+                            triggeredInfo.append(result)
+                        else:
                             triggeredInfo.append(result)
 
                 elif "all_of" in logic:
                     allResults = []
                     for condition in logic["all_of"]:
-                        result = evaluate_condition(condition["condition"], evidence, boot_sessions)
+                        result = evalCondition(condition["condition"], evidence, boot_sessions)
                         allResults.append(result)
 
                     # Check if all conditions are violated
