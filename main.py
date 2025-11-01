@@ -1,5 +1,5 @@
 import pandas as pd
-import os, json, re, yaml, networkx, datetime
+import os, json, re, yaml, networkx, datetime, subprocess
 
 # Global Declaration
 linkedEntities = {}
@@ -197,6 +197,11 @@ def deriveLinkedEntities(row):
     if src == "amcache" and srctype == "amcache registry entry":
         logType = "AMCACHE"
 
+        type = row.get("type", "").lower().strip()
+
+        if type == "link time":
+            return # skip link time entries
+        
         normalizedShort = normalizeKey(short)
 
         # Account for situations whereby $MFT doesn't exist, but Amcache does (not common, but possible)
@@ -211,7 +216,8 @@ def deriveLinkedEntities(row):
             "original_filename": original_filename,
             "isValidTime": isValidTime,
             "short_description": short,
-            "macb": macb
+            "macb": macb,
+            "type": type
         })
     
     # AppCompatCache: similar to Amcache
@@ -317,7 +323,7 @@ def deriveLinkedEntities(row):
 
 # Function: Parse the linked entities from JSON
 def parseLinkedEntities():
-    with open(os.path.join('source', 'linked_entities_amend.json'), 'r', encoding='utf-8') as f:
+    with open(os.path.join('source', 'linked_entities_amcache.json'), 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     return data
@@ -608,55 +614,65 @@ def evalCondition(condition, linkedEntities, boot_sessions):
 # Function: Rule Evaluation
 # To be implemented: ensure rules are structurally correct and all fields can be obtained
 def evaluateRules(yamlRules, linkedEntities, boot_sessions):
+    print("[RULE EVALUATION] Evaluating linked entities against YAML rules.")
     ruleViolations = []
     for key, evidence in linkedEntities.items():
         # For testing purposes, only evaluate a specific key
-        if key == "users/timel/desktop/cases/creation_future.exe":
-            # print(key, evidence)
-            for rule in yamlRules:
-                logic = rule.get("logic", {})
-                triggeredInfo = []
-                inconclusiveInfo = []
+        # if key == "users/timel/desktop/cases/creation_future.exe":
+        # if key == "users/timel/downloads/ntimestomp_v1.2_x64.exe":
+        # print(key, evidence)
+        for rule in yamlRules:
+            logic = rule.get("logic", {})
+            triggeredInfo = []
+            inconclusiveInfo = []
 
-                if "any_of" in logic:
-                    for condition in logic["any_of"]:
-                        result = evalCondition(condition["condition"], evidence, boot_sessions)
-                        if result.get("violated"):
-                            triggeredInfo.append(result)
+            if "any_of" in logic:
+                for condition in logic["any_of"]:
+                    result = evalCondition(condition["condition"], evidence, boot_sessions)
+                    if result.get("violated"):
+                        triggeredInfo.append(result)
 
-                        # To be done: handle inconclusive separately
-                        elif result.get("inconclusive") and result not in inconclusiveInfo:
-                            inconclusiveInfo.append(result)
+                    # To be done: handle inconclusive separately
+                    elif result.get("inconclusive") and result not in inconclusiveInfo:
+                        inconclusiveInfo.append(result)
 
-                elif "all_of" in logic:
-                    allResults = []
-                    for condition in logic["all_of"]:
-                        result = evalCondition(condition["condition"], evidence, boot_sessions)
-                        allResults.append(result)
+            elif "all_of" in logic:
+                allResults = []
+                for condition in logic["all_of"]:
+                    result = evalCondition(condition["condition"], evidence, boot_sessions)
+                    allResults.append(result)
 
-                    # Check if all conditions are violated
-                    if all(res.get("violated") for res in allResults):
-                        triggeredInfo.extend(allResults)
-                    
-                    # Collect inconclusive results
-                    for res in allResults:
-                        if res.get("inconclusive") and res not in inconclusiveInfo:
-                            inconclusiveInfo.append(res)
+                # Check if all conditions are violated
+                if all(res.get("violated") for res in allResults):
+                    triggeredInfo.extend(allResults)
+                
+                # Collect inconclusive results
+                for res in allResults:
+                    if res.get("inconclusive") and res not in inconclusiveInfo:
+                        inconclusiveInfo.append(res)
 
-                if triggeredInfo or inconclusiveInfo:
-                    ruleViolations.append({
-                        "entity": key,
-                        "rule_id": rule.get("id"),
-                        "rule_name": rule.get("name"),
-                        "severity": rule.get("severity"),
-                        "explanation": rule.get("explanation"),
-                        "violations": triggeredInfo if triggeredInfo else None,
-                        "inconclusive": inconclusiveInfo if inconclusiveInfo else None
-                    })
+            if triggeredInfo or inconclusiveInfo:
+                ruleViolations.append({
+                    "entity": key,
+                    "rule_id": rule.get("id"),
+                    "rule_name": rule.get("name"),
+                    "severity": rule.get("severity"),
+                    "explanation": rule.get("explanation"),
+                    "violations": triggeredInfo if triggeredInfo else None,
+                    "inconclusive": inconclusiveInfo if inconclusiveInfo else None
+                })
 
     print(json.dumps(ruleViolations, indent=4))
+
+    # filterForViolations(ruleViolations)
+
     return ruleViolations
 
+def filterForViolations(ruleViolations):
+    violations_only = [rv for rv in ruleViolations if rv.get("violations")]
+
+    print(violations_only)
+    return violations_only
 
 if __name__ == "__main__":
     while True:
@@ -708,7 +724,7 @@ if __name__ == "__main__":
 
                 # For the sake of checking: output to file
                 print("[WRITING] Writing linked entities to JSON file.")
-                output_path = os.path.join('source', 'linked_entities.json')
+                output_path = os.path.join('source', 'linked_entities_amche.json')
 
                 # Convert to JSON and write to file
                 with open(output_path, 'w', encoding='utf-8') as f:

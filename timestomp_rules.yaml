@@ -53,7 +53,7 @@ rules:
 
     logic:
       any_of:
-        - condition: "datetime(PREFETCH) < datetime($MFT, macb='.a..')"
-        # - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
-        - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a..')"
+        - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
+        - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
+        - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='...b')"
       explanation: "Execution evidence predates file creation - possible timestomping."
