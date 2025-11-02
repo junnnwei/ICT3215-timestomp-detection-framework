@@ -509,9 +509,10 @@ def extract_macb_filters(condition: str):
     return left_macb_filter, right_macb_filter
 
 # Function: Evaluate Conditions
-def evalCondition(condition, linkedEntities, boot_sessions):
+def evalCondition(condition, linkedEntities, boot_sessions, allowed_latency):
     condition = condition.strip()
     macb_filter = None
+    DRIFT_TOLERANCE = pd.Timedelta(seconds=int(allowed_latency))
     
     # --- RULE HANDLER SECTION ---
     # Major Rule 1 Handler:
@@ -554,7 +555,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
         # Iterate through every matched timestamp & check against boot sessions
         for ts in timestamps:
             # outOfSession = any((pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])) for session in boot_sessions)
-            offendingSession = next((session for session in boot_sessions if pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])), None)
+            offendingSession = next((session for session in boot_sessions if (pd.to_datetime(session["previous_boot_end"]) + DRIFT_TOLERANCE) <= ts <= (pd.to_datetime(session["next_boot_start"]) - DRIFT_TOLERANCE)), None)
             
             # Found a timestamp outside boot sessions
             # if outOfSession:
@@ -656,7 +657,14 @@ def evalCondition(condition, linkedEntities, boot_sessions):
         # print(f"{left_timestamps[0]} {op} {right_timestamps[0]} → {cmp_map[op](left_timestamps[0], right_timestamps[0])}")
         # print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
 
-        if cmp_map[op](left_timestamps[0], right_timestamps[0]):
+        if op in ["<", "<="]:
+            rt_adj = right_timestamps[0] - DRIFT_TOLERANCE
+        elif op in [">", ">="]:
+            rt_adj = right_timestamps[0] + DRIFT_TOLERANCE
+        else:
+            rt_adj = right_timestamps[0]
+
+        if cmp_map[op](left_timestamps[0], rt_adj):
             return {
                 "violated": True,
                 "boot_sessions_involvement": False,
@@ -691,12 +699,13 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
         # print(key, evidence)
         for rule in yamlRules:
             logic = rule.get("logic", {})
+            allowed_latency = rule.get("latency-buffer-seconds")
             triggeredInfo = []
             inconclusiveInfo = []
 
             if "any_of" in logic:
                 for condition in logic["any_of"]:
-                    result = evalCondition(condition["condition"], evidence, boot_sessions)
+                    result = evalCondition(condition["condition"], evidence, boot_sessions, allowed_latency)
                     if result.get("violated"):
                         triggeredInfo.append(result)
 
@@ -707,7 +716,7 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
             elif "all_of" in logic:
                 allResults = []
                 for condition in logic["all_of"]:
-                    result = evalCondition(condition["condition"], evidence, boot_sessions)
+                    result = evalCondition(condition["condition"], evidence, boot_sessions, allowed_latency)
                     allResults.append(result)
 
                 # Check if all conditions are violated
@@ -730,16 +739,16 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
                     "inconclusive": inconclusiveInfo if inconclusiveInfo else None
                 })
 
-    print(json.dumps(ruleViolations, indent=4))
+    # print(json.dumps(ruleViolations, indent=4))
 
-    # filterForViolations(ruleViolations)
+    filterForViolations(ruleViolations)
 
     return ruleViolations
 
 def filterForViolations(ruleViolations):
     violations_only = [rv for rv in ruleViolations if rv.get("violations")]
 
-    print(violations_only)
+    print(json.dumps(violations_only, indent=4))
     return violations_only
 
 if __name__ == "__main__":
