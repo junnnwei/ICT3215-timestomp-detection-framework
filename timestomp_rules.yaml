@@ -44,7 +44,6 @@ rules:
     name: "Execution-before-Creation"
     description: "File executed before any creation evidence exists."
     severity: "High"
-    latency-buffer-seconds: 120 
 
     entities:
       - "$MFT"
@@ -54,8 +53,7 @@ rules:
 
     logic:
       any_of:
-        # - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
-        # - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
-        # - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='...b')"
-        - condition: "datetime($MFT, macb='...b') not between (BOOT_SESSIONS)"
+        - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
+        - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
+        - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='...b')"
       explanation: "Execution evidence predates file creation - possible timestomping."
