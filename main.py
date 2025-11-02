@@ -1,5 +1,5 @@
 import pandas as pd
-import os, json, re, yaml, networkx, datetime, subprocess
+import os, json, re, yaml, networkx, datetime, subprocess, glob
 
 # Global Declaration
 linkedEntities = {}
@@ -14,12 +14,18 @@ def checkSourceFiles():
     # Load and display the CSV file
     csv_path = os.path.join('source', 'timeline.csv')
 
-    if os.path.isfile(csv_path):
-        return True
-
-    else:
+    if not os.path.isfile(csv_path):
         print("'timeline.csv' not found inside 'source/'. Please place it there before running this script.")
         return False
+
+    # Check for Amcache.hve file presence
+    amcache_path = os.path.join('source', 'Amcache.hve')
+
+    if not os.path.isfile(amcache_path):
+        print("'Amcache.hve' not found inside 'source/'. Please place it there before running this script.")
+        return False
+    
+    return True
 
 # Function: Process the timestamps & include a validity flag
 def processTimestamps(df):
@@ -158,6 +164,66 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
                 "prefetch_name": pf_name
             })
 
+# Function: Execute Amcache Parser & Perform Linking
+def executeAmcacheParser(linkedEntities):
+    amcache_path = os.path.join('source', 'Amcache.hve')
+    output_dir = os.path.join('source', 'amcache_output')
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Tool path
+    amcacheParser = os.path.join('support-tools', 'AmcacheParser.exe')
+    cmd = [amcacheParser, '-f', amcache_path, '--csv', output_dir]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+    # Verify
+    if "Results saved to: source\\amcache_output" in result.stdout:
+        pattern = os.path.join(output_dir, '*_Amcache_UnassociatedFileEntries.csv')
+        csv_files = glob.glob(pattern)
+        csv_path = csv_files[0]
+
+        amcache_df = pd.read_csv(csv_path, low_memory=False)
+        
+        # From experimenting, there'll sometimes be a row with a blank fullpath
+        amcache_df = amcache_df.dropna(subset=["FullPath"])  # drop NaN
+        amcache_df = amcache_df[amcache_df["FullPath"].astype(str).str.strip() != ""]
+        
+        count = 0
+        for _, row in amcache_df.iterrows():
+            file_path = str(row.get("FullPath", "")).strip().lower()
+            timestamp = str(row.get("FileKeyLastWriteTimestamp", "")).strip().lower()
+
+            normalized_path = normalizeKey(file_path)
+            dt = pd.to_datetime(timestamp, errors="coerce")
+            dt_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            logType = "AMCACHE"
+
+            linkedEntities.setdefault(normalized_path, {})
+            linkedEntities[normalized_path].setdefault(logType, []).append({
+                "datetime": dt_str,
+                "original_filename": str(row.get("Name", "")),
+                "isValidTime": True,
+            })
+
+            count += 1
+        
+        print(f"[+] Linked {count} Amcache entries into linkedEntities (timestamps normalized).")
+
+        for file in os.listdir(output_dir):
+            full_path = os.path.join(output_dir, file)
+            try:
+                os.remove(full_path)
+            except:
+                pass
+        
+        print("[CLEANING] Removed Amcache Parser files post-entity linkage.")
+
+    else:
+        print("[WARNING] Amcache Parser failed. Continuing without Amcache records.")
+
+
+
 # Function: Form linked entities (excl. $UsnJournal)
 def deriveLinkedEntities(row):
     """Derivation of linked entities ID based on analysis of sources"""
@@ -194,31 +260,33 @@ def deriveLinkedEntities(row):
         })
     
     # Amcache: for Amcache, the short description contains the path which matches the data structure key
-    if src == "amcache" and srctype == "amcache registry entry":
-        logType = "AMCACHE"
+    # Update 2/11/25 1131 hrs: skipping Amcache handling as per new design decision
 
-        type = row.get("type", "").lower().strip()
+    # if src == "amcache" and srctype == "amcache registry entry":
+    #     logType = "AMCACHE"
 
-        if type == "link time":
-            return # skip link time entries
+    #     type = row.get("type", "").lower().strip()
+
+    #     if type == "link time":
+    #         return # skip link time entries
         
-        normalizedShort = normalizeKey(short)
+    #     normalizedShort = normalizeKey(short)
 
-        # Account for situations whereby $MFT doesn't exist, but Amcache does (not common, but possible)
-        if normalizedShort not in linkedEntities:
-            linkedEntities[normalizedShort] = {}
+    #     # Account for situations whereby $MFT doesn't exist, but Amcache does (not common, but possible)
+    #     if normalizedShort not in linkedEntities:
+    #         linkedEntities[normalizedShort] = {}
 
-        if logType not in linkedEntities[normalizedShort]:
-            linkedEntities[normalizedShort][logType] = []
+    #     if logType not in linkedEntities[normalizedShort]:
+    #         linkedEntities[normalizedShort][logType] = []
         
-        linkedEntities[normalizedShort][logType].append({
-            "datetime": datetime_str,
-            "original_filename": original_filename,
-            "isValidTime": isValidTime,
-            "short_description": short,
-            "macb": macb,
-            "type": type
-        })
+    #     linkedEntities[normalizedShort][logType].append({
+    #         "datetime": datetime_str,
+    #         "original_filename": original_filename,
+    #         "isValidTime": isValidTime,
+    #         "short_description": short,
+    #         "macb": macb,
+    #         "type": type
+    #     })
     
     # AppCompatCache: similar to Amcache
     if src == "reg" and srctype == "appcompatcache registry key":
@@ -323,7 +391,7 @@ def deriveLinkedEntities(row):
 
 # Function: Parse the linked entities from JSON
 def parseLinkedEntities():
-    with open(os.path.join('source', 'linked_entities_amcache.json'), 'r', encoding='utf-8') as f:
+    with open(os.path.join('source', 'linked_entities.json'), 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     return data
@@ -679,7 +747,7 @@ if __name__ == "__main__":
         print("==================================================")
         print("ICT3215 TIMESTOMP DETECTION FRAMEWORK".center(50))
         print("==================================================")
-        electedOption = input("1. Process timeline.csv and derive linked entities\n2. YAML Rule Builder (GUI)\n3. Parse YAML Rules & Validate\n4. Exit\nEnter choice (1-4): ").strip()
+        electedOption = input("1. Link Relevant Entities\n2. YAML Rule Builder (GUI)\n3. Parse YAML Rules & Validate\n4. Exit\nEnter choice (1-4): ").strip()
         
         if electedOption == '1':
             if checkSourceFiles():
@@ -700,6 +768,9 @@ if __name__ == "__main__":
                 print("[LINKING] Building linked entities.")
                 for _, row in df.iterrows():
                     deriveLinkedEntities(row)
+
+                # New: Amcache Linker as per new design decision
+                executeAmcacheParser(linkedEntities)
 
                 # Build O(1) lookups for USN linking
                 inode_to_key, pf_to_key = buildUSNJournalLookups(linkedEntities)
@@ -724,7 +795,7 @@ if __name__ == "__main__":
 
                 # For the sake of checking: output to file
                 print("[WRITING] Writing linked entities to JSON file.")
-                output_path = os.path.join('source', 'linked_entities_amche.json')
+                output_path = os.path.join('source', 'linked_entities.json')
 
                 # Convert to JSON and write to file
                 with open(output_path, 'w', encoding='utf-8') as f:
