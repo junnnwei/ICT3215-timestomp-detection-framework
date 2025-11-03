@@ -8,7 +8,7 @@ linkedEntities = {}
 def checkSourceFiles():
     # Ensure 'source/' directory exists
     if not os.path.exists('source'):
-        os.makedirs('source')
+        os.makedirs('source', exist_ok=True)
         print("Created 'source/' directory.")
 
     # Load and display the CSV file
@@ -23,6 +23,13 @@ def checkSourceFiles():
 
     if not os.path.isfile(amcache_path):
         print("'Amcache.hve' not found inside 'source/'. Please place it there before running this script.")
+        return False
+
+    prefetchPath = os.path.join('source/prefetch')
+    os.makedirs(prefetchPath, exist_ok=True)
+
+    if not any(os.scandir(prefetchPath)):
+        print(f"No prefetch files detected. Please extract them using FTK Imager/Encase and place it in {prefetchPath}.")
         return False
     
     return True
@@ -58,6 +65,7 @@ def normalizeKey(path):
     path = re.sub(r'^(ntfs:|path:)\s*', '', path)
     path = re.sub(r'^[a-z]:[\\/]', '', path)       # remove drive letter prefix (e.g. C:)
     path = re.sub(r'^\\+', '', path)          # remove leading backslashes
+    path = re.sub(r'^volume\{[0-9a-f\-]+\}[\\/]*', '', path) # remove volume{...} prefix from WinPrefetchView
 
     # Replace backslashes with forward slashes for consistency
     path = path.replace('\\', '/')
@@ -109,7 +117,7 @@ def buildUSNJournalLookups(linkedEntities):
 
             elif subheader == "PREFETCH":
                 for entry in entries:
-                    prefetch_filename = entry.get("prefetch_filename")
+                    prefetch_filename = entry.get("prefetch_filename").lower()
                     if prefetch_filename:
                         pf_to_key.setdefault(prefetch_filename, set()).add(key)
     
@@ -123,11 +131,12 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
     if not (src == "file" and srctype == "ntfs usn change"):
         return
     
-    short = row.get("short", "").lower().strip()
+    short = row.get("short", "").lower()
     original_filename = str(row.get("filename", "")).lower().strip()
     macb = row.get("MACB", "").lower().strip()
     datetime = row.get("datetime", "")
     isValidTime = row.get("is_valid_time")
+    description = row.get("desc", "")
 
     # Convert timestamp for readability
     datetime_str = datetime.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(datetime) else None
@@ -146,6 +155,7 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
             "original_filename": original_filename,
             "isValidTime": isValidTime,
             "short_description": short,
+            "long_description": description,
             "macb": macb
         })
         return
@@ -161,7 +171,7 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
                 "isValidTime": isValidTime,
                 "short_description": short,
                 "macb": macb,
-                "prefetch_name": pf_name
+                "prefetch_filename": pf_name
             })
 
 # Function: Execute Amcache Parser & Perform Linking
@@ -222,7 +232,64 @@ def executeAmcacheParser(linkedEntities):
     else:
         print("[WARNING] Amcache Parser failed. Continuing without Amcache records.")
 
+# Function: Execution of WinPrefetchView to accurately link prefetch files
+def executeWinPrefetchView(linkedEntities):
+    logType = "PREFETCH"
+    print("[+] WinPrefetchView Processing")
+    prefetch_path = os.path.join('source', 'prefetch')
+    prefetchCSVSource = os.path.join('source/prefetch.csv')
 
+    # Tool path
+    winPrefetchView = os.path.join('support-tools', 'WinPrefetchView.exe')
+
+    # WinPrefetchView.exe /folder "C:\Users\User\Downloads\DF Project\Prefetch" /scomma prefetch.csv
+    cmd = [winPrefetchView, '/folder', prefetch_path, '/scomma', prefetchCSVSource]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    
+    except Exception as e:
+        print("[-] Failed to run WinPrefetchView.exe, did you run the program as administrator?")
+        return
+
+    # Parse the prefetch.csv
+    if os.path.isfile(prefetchCSVSource):
+        df = pd.read_csv(prefetchCSVSource)
+
+        # Drop missing fields for processpath
+        df = df[df["Process Path"].notna() & (df["Process Path"] != "") & (df["Process Path"] != "nan")]
+        df = df[df["Last Run Time"].notna() & (df["Last Run Time"] != "") & (df["Last Run Time"] != "nan")]
+
+        # print(df)
+        # print(df["Process Path"].apply(normalizeKey))
+
+        df["Process Path Normalized"] = df["Process Path"].apply(normalizeKey)
+
+        for _, row in df.iterrows():
+            processPath = row["Process Path Normalized"]
+            timestamp = row.get("Last Run Time")
+            splittedTimestamps = timestamp.split(",")
+
+            if processPath not in linkedEntities:
+                linkedEntities[processPath] = {}
+            
+            if logType not in linkedEntities[processPath]:
+                linkedEntities[processPath][logType] = []
+
+            # Add entries iteratively
+            for ts in splittedTimestamps:
+                ts = ts.strip()
+                cleanTS = datetime.datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                linkedEntities[processPath][logType].append({
+                    "datetime": cleanTS,
+                    "creation_time": row.get("Creation Time"),
+                    "modified_time": row.get("Modified Time"),
+                    "prefetch_filename": row.get("Filename"),
+                    "executable_filename": row.get("Process EXE"),
+                    "isValidTime": True,
+                    "original_process_path": row.get("Process Path")
+                })
+    
+        os.remove(prefetchCSVSource)
 
 # Function: Form linked entities (excl. $UsnJournal)
 def deriveLinkedEntities(row):
@@ -368,26 +435,27 @@ def deriveLinkedEntities(row):
         })
     
     # Prefetch
-    if src == "file" and srctype == "file stat" and r"\windows\prefetch" in short:
-        logType = "PREFETCH"
+    # Update 3/11/25: This is now deprecated, we'll use WinPrefetchView instead to obtain the most accurate information
+    # if src == "file" and srctype == "file stat" and r"\windows\prefetch" in short:
+    #     logType = "PREFETCH"
 
-        prefetchBinary = stripPrefetchName(short)
-        pf_name = os.path.basename(short)
+    #     prefetchBinary = stripPrefetchName(short)
+    #     pf_name = os.path.basename(short)
 
-        # Find matching entity key
-        # Try direct filename match with normalized linkedEntities keys
-        matches = [key for key in linkedEntities.keys() if key.endswith("/" + prefetchBinary)]
+    #     # Find matching entity key
+    #     # Try direct filename match with normalized linkedEntities keys
+    #     matches = [key for key in linkedEntities.keys() if key.endswith("/" + prefetchBinary)]
 
-        if matches:
-            for key in matches:
-                linkedEntities[key].setdefault(logType, []).append({
-                    "datetime": datetime_str,
-                    "isValidTime": isValidTime,
-                    "exe_name": prefetchBinary,
-                    "original_filename": original_filename,
-                    "short": short,
-                    "prefetch_filename": pf_name
-                })
+    #     if matches:
+    #         for key in matches:
+    #             linkedEntities[key].setdefault(logType, []).append({
+    #                 "datetime": datetime_str,
+    #                 "isValidTime": isValidTime,
+    #                 "exe_name": prefetchBinary,
+    #                 "original_filename": original_filename,
+    #                 "short": short,
+    #                 "prefetch_filename": pf_name
+    #             })
 
 # Function: Parse the linked entities from JSON
 def parseLinkedEntities():
@@ -751,6 +819,8 @@ if __name__ == "__main__":
         
         if electedOption == '1':
             if checkSourceFiles():
+                # executeWinPrefetchView(linkedEntities)
+                # test = input("ASDsadas: ")
                 print("[PARSING] Parsing timeline.")
                 df = pd.read_csv('source/timeline.csv', low_memory=False)
                 # print(df.columns)
@@ -761,7 +831,7 @@ if __name__ == "__main__":
                 df = df[~df["source"].isin(["WEBHIST"])]
 
                 # Process timestamps & mark the invalid ones
-                print("[PROCESSING] Proessing timestamps.")
+                print("[PROCESSING] Processing timestamps.")
                 df = processTimestamps(df)
 
                 # Build LinkedEntities without USNJournal first
@@ -772,10 +842,13 @@ if __name__ == "__main__":
                 # New: Amcache Linker as per new design decision
                 executeAmcacheParser(linkedEntities)
 
+                # New: Prefetch Linker as per new design decision
+                executeWinPrefetchView(linkedEntities)
+
                 # Build O(1) lookups for USN linking
                 inode_to_key, pf_to_key = buildUSNJournalLookups(linkedEntities)
                 # print(inode_to_key)
-                # print(pf_to_key)
+                print(pf_to_key)
 
                 # Link USN rows using lookups
                 usn_mask = (df["source"].str.lower() == "file") & (df["sourcetype"].str.lower() == "ntfs usn change")
@@ -792,6 +865,11 @@ if __name__ == "__main__":
                 #         sumOfUSNEntries += 1
                 
                 # print(f"[DEBUG] Entities with $USN_JOURNAL: {sumOfUSNEntries}")
+
+                # Remove PE/COFF due to inaccuracy of timestamp & lack of relevance to timestomp detection
+                for file, logTypes in linkedEntities.items():
+                    if "PE_COFF" in logTypes:
+                        del linkedEntities[file]["PE_COFF"]
 
                 # For the sake of checking: output to file
                 print("[WRITING] Writing linked entities to JSON file.")
