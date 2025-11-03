@@ -170,6 +170,7 @@ def linkUSNEntry(row, inode_to_key, pf_to_key):
                 "original_filename": original_filename,
                 "isValidTime": isValidTime,
                 "short_description": short,
+                "long_description": description,
                 "macb": macb,
                 "prefetch_filename": pf_name
             })
