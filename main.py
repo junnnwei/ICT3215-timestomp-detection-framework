@@ -476,8 +476,9 @@ def parseLinkedEntities():
 
     return data
 
-# Function: Parse power on/off events from JSON
+# Function: Parse Winlogon (7002)/Winlogoff (7002) events from JSON
 def parseAuthenticationEvents():
+    """ Returns authentication pairs; this project assumes that there'll no clean startup and shutdowns, thereby forming pairs. Future work: power on/off events"""
     path = os.path.join('source', 'winlogauthentication_events.json')
     if not os.path.exists(path):
         print("[-] winlogauthentication_events.json not found.")
