@@ -259,6 +259,7 @@ def executeWinPrefetchView(linkedEntities):
         # Drop missing fields for processpath
         df = df[df["Process Path"].notna() & (df["Process Path"] != "") & (df["Process Path"] != "nan")]
         df = df[df["Last Run Time"].notna() & (df["Last Run Time"] != "") & (df["Last Run Time"] != "nan")]
+        df = df[df["Created Time"].notna() & (df["Created Time"] != "") & (df["Created Time"] != "nan")]
 
         # print(df)
         # print(df["Process Path"].apply(normalizeKey))
@@ -282,8 +283,8 @@ def executeWinPrefetchView(linkedEntities):
                 cleanTS = datetime.datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
                 linkedEntities[processPath][logType].append({
                     "datetime": cleanTS,
-                    "creation_time": row.get("Creation Time"),
-                    "modified_time": row.get("Modified Time"),
+                    "creation_time": datetime.datetime.strptime(row.get("Created Time").strip(), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
+                    "modified_time": datetime.datetime.strptime(row.get("Modified Time"), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
                     "prefetch_filename": row.get("Filename"),
                     "executable_filename": row.get("Process EXE"),
                     "isValidTime": True,
@@ -527,77 +528,140 @@ def parseYAMLRules(yaml_path):
 
     return rules.get("rules", [])
 
-def get_datetime(linkedEntities, srcLog, macb_filter=None):
+def get_datetime(linkedEntities, srcLog):
     # MACB attributes are file system timestamps that record a file's Modified, Accessed, Changed (metadata), and Birth (creation) times.
-    entries = linkedEntities.get(srcLog, [])
+    if '.' not in srcLog:
+        raise ValueError(f"[FORMAT ERROR] Condition missing attribute: '{srcLog}'")
+    
+    src_name, attr = srcLog.split(".", 1)
+    src_name = src_name.strip()
+    attr = attr.strip()
     valid_times = []
 
-    for e in entries:
-        dt = e.get("datetime")
-        
-        # Skip if MACB filter is specified and doesn't match
-        if macb_filter:
-            # Apply MACB filter
-            macb = e.get("macb", "")
-            if macb_filter not in macb:
+    entries = linkedEntities.get(src_name, [])
+    if not entries:
+        return []
+    
+    # Special handling for $MFT
+    if src_name == "$MFT":
+        MACB_MAP = {
+            "none": "....",
+            "creation": "...b",
+            "metachange": "..c.",
+            "metachange_creation": "..cb",
+            "accessed": ".a..",
+            "accessed_creation": ".a.b",
+            "accessed_metachange": ".ac.",
+            "accessed_metachange_creation": ".acb",
+            "modified": "m...",
+            "modified_creation": "m..b",
+            "modified_metachange": "m.c.",
+            "modified_metachange_creation": "m.cb",
+            "modified_accessed": "ma..",
+            "modified_accessed_creation": "ma.b",
+            "modified_accessed_metachange": "mac.",
+            "modified_accessed_metachange_creation": "macb"
+        }
+    
+        # .birth maps to ...b
+        expectedMACB = MACB_MAP.get(attr)
+
+        for e in entries:
+            if not e.get("isValidTime", True):
+                continue
+            
+            macb = e.get("macb")
+
+            # Check if $MFT has the particular MACB variant that is being looked for
+            if expectedMACB not in macb:
+                continue
+
+            dt = e.get("datetime")
+            if not dt:
                 continue
         
-        # If datetime = null or isValidTime = false, skip
-        if not dt or not e.get("isValidTime"):
-            # print("dateTime is NULL or isValidTime is false. Skipping.")
-            continue
-        
-        # print(dt)
-        valid_times.append(pd.to_datetime(dt))
+            valid_times.append(pd.to_datetime(dt))
     
+    # Prefetch Handling
+    elif src_name == "PREFETCH":
+        if attr == "firstrun":
+            # Use creation time
+            for e in entries:
+                if not e.get("isValidTime", True):
+                    continue
+                
+                dt = e.get("creation_time")
+                if not dt:
+                    continue
+
+                valid_times.append(pd.to_datetime(dt))
+        
+        elif attr == "lastrun":
+            # Use the final execution timestamp
+            all_runs = []
+            for e in entries:
+                if not e.get("isValidTime", True):
+                    continue
+
+                dt = e.get("datetime")
+                if not dt:
+                    continue
+            
+                all_runs.append(pd.to_datetime(dt))
+            
+            if all_runs:
+                valid_times.append(max(all_runs))
+
+        # Iterate through everything and return; these are max of past 8 runs
+        else:
+            for e in entries:
+                if not e.get("isValidTime", True):
+                    continue
+
+                dt = e.get(attr)
+                
+                if not dt:
+                    continue
+
+                valid_times.append(pd.to_datetime(dt))
+
+    # USNJournal Handling
+    # elif src_name == "$USN_JOURNAL":
+
+    # Other log types
+    else:
+        for e in entries:
+            if not e.get("isValidTrue", True):
+                continue
+            
+            # Use direct attribute field
+            dt = e.get(attr)
+
+            if not dt:
+                continue
+
+            valid_times.append(pd.to_datetime(dt))
+
     # Sort chronologically
     valid_times.sort()
 
     return valid_times
 
-# Function: Extract MACB Attributes defined in the rule YAML file from either left, right, or both, only applicable to conditions without "BOOT_SESSIONS"
-# BOOT_SESSIONS conditions will be handled separately, and within rule builder tool, it shouldn't be created to have any operators
-def extract_macb_filters(condition: str):
-    # Split once on a comparison operator (keeps operator too)
-    parts = re.split(r'\s*(<=|>=|==|!=|<|>)\s*', condition, maxsplit=1)
-    if len(parts) < 3:
-        return None, None  # malformed
-
-    left_expr, op, right_expr = parts
-
-    # Regex to extract macb='...' or macb="..."
-    pattern = r"macb=['\"]([MACBmacb\.\-]+)['\"]"
-
-    left_match = re.search(pattern, left_expr)
-    right_match = re.search(pattern, right_expr)
-
-    left_macb_filter = left_match.group(1) if left_match else None
-    right_macb_filter = right_match.group(1) if right_match else None
-
-    return left_macb_filter, right_macb_filter
-
 # Function: Evaluate Conditions
 def evalCondition(condition, linkedEntities, boot_sessions):
     condition = condition.strip()
-    macb_filter = None
     
     # --- RULE HANDLER SECTION ---
     # Major Rule 1 Handler:
     # Example:
     # - datetime($MFT) not between (BOOT_SESSIONS)
     # - datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS) [or any other MACB variants, m.c. tested here since it matches an event in our linkedEntities]
-    if "not between (BOOT_SESSIONS)" in condition:
-        # Extract MACB filter if necessary
-        macb_match = re.search(r"macb=['\"]([macb\.\-]+)['\"]", condition)
-        if macb_match:
-            macb_filter = macb_match.group(1)
-                
+    if "not between (BOOT_SESSIONS)" in condition:    
         src_match = re.search(r"datetime\(([^),]+)", condition)
         srcLog = src_match.group(1).strip()
 
         # Theoretically unreachable, just error handling
-        timestamps = get_datetime(linkedEntities, srcLog, macb_filter)
-        # print(f"srcLog: {srcLog}, timestamps: {timestamps}, macb_filter: {macb_filter}")
+        timestamps = get_datetime(linkedEntities, srcLog)
 
         if not timestamps:
             return {
@@ -605,7 +669,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                 "inconclusive": True,
                 "reason": "timestamps_not_found",
                 "context": {
-                    "description": f"Source: {srcLog} with MACB='{macb_filter}' not found."
+                    "description": f"Source: {srcLog} not found."
                 }
             }
         
@@ -639,7 +703,6 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                     "violating_event": {
                         "src": srcLog,
                         "timestamp": str(ts),
-                        "macb_filter": macb_filter or "N/A",
                         "operator": "not between"
                     },
                     "context": {
@@ -669,13 +732,9 @@ def evalCondition(condition, linkedEntities, boot_sessions):
         left_entity = src_match[0].strip()
         right_entity = src_match[1].strip()
 
-        # Extract MACB filter
-        macb_match = re.findall(r"macb=['\"]([macb\.\-]+)['\"]", condition)
-        left_macb_filter, right_macb_filter = extract_macb_filters(condition)
-
-        left_timestamps = get_datetime(linkedEntities, left_entity, left_macb_filter)
+        left_timestamps = get_datetime(linkedEntities, left_entity)
         # print(f"Left: {left_timestamps}")
-        right_timestamps = get_datetime(linkedEntities, right_entity, right_macb_filter)
+        right_timestamps = get_datetime(linkedEntities, right_entity)
         # print(f"Right: {right_timestamps}")
 
         if not left_timestamps:
@@ -684,7 +743,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                 "inconclusive": True,
                 "reason": "timestamps_not_found",
                 "context": {
-                    "description": f"Source: {left_entity} with MACB='{left_macb_filter}' not found."
+                    "description": f"Source: {left_entity} not found."
                 }
             }
         
@@ -694,7 +753,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                 "inconclusive": True,
                 "reason": "timestamps_not_found",
                 "context": {
-                    "description": f"Source: {right_entity} with MACB='{right_macb_filter}' not found."
+                    "description": f"Source: {right_entity} not found."
                 }
             }
 
@@ -722,28 +781,26 @@ def evalCondition(condition, linkedEntities, boot_sessions):
         if not left_timestamps or not right_timestamps:
             return {"violated": False}
         
-        # print(f"{left_timestamps[0]} {op} {right_timestamps[0]} → {cmp_map[op](left_timestamps[0], right_timestamps[0])}")
         # print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
-
-        if cmp_map[op](left_timestamps[0], right_timestamps[0]):
-            return {
-                "violated": True,
-                "boot_sessions_involvement": False,
-                "violating_event": {
-                    "left_src": left_entity,
-                    "left_timestamp": str(left_timestamps[0]),
-                    "left_macb_filter": left_macb_filter or "N/A",
-                    "right_src": right_entity,
-                    "right_timestamp": str(right_timestamps[0]),
-                    "right_macb_filter": right_macb_filter or "N/A",
-                    "operator": op
-                },
-                "context": {
-                    "description": (
-                        f"Condition violated: {left_entity} (MACB: {left_macb_filter}) timestamp {left_timestamps[0]} {op} {right_entity} (MACB: {right_macb_filter}) timestamp {right_timestamps[0]}"
-                    )
-                }
-            }
+        for left_time in left_timestamps:
+            for right_time in right_timestamps:
+                if cmp_map[op](left_time, right_time):
+                    return {
+                        "violated": True,
+                        "boot_sessions_involvement": False,
+                        "violating_event": {
+                            "left_src": left_entity,
+                            "left_timestamp": str(left_time),
+                            "right_src": right_entity,
+                            "right_timestamp": str(right_time),
+                            "operator": op
+                        },
+                        "context": {
+                            "description": (
+                                f"Condition violated: {left_entity} timestamp {left_time} {op} {right_entity} timestamp {right_time}"
+                            )
+                        }
+                    }
 
     # --- Default return for unhandled rule types ---
     return {"violated": False}
@@ -878,7 +935,7 @@ if __name__ == "__main__":
                 # Build O(1) lookups for USN linking
                 inode_to_key, pf_to_key = buildUSNJournalLookups(linkedEntities)
                 # print(inode_to_key)
-                print(pf_to_key)
+                # print(pf_to_key)
 
                 # Link USN rows using lookups
                 usn_mask = (df["source"].str.lower() == "file") & (df["sourcetype"].str.lower() == "ntfs usn change")
