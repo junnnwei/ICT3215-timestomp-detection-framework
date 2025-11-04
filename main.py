@@ -692,7 +692,7 @@ def get_datetime(linkedEntities, srcLog):
     # Other log types
     else:
         for e in entries:
-            if not e.get("isValidTrue", True):
+            if not e.get("isValidTime", True):
                 continue
             
             # Use direct attribute field
@@ -918,7 +918,7 @@ def matchTarget(key, target):
 # To be implemented: ensure rules are structurally correct and all fields can be obtained
 def evaluateRules(yamlRules, linkedEntities, auth_sessions):
     print("[RULE EVALUATION] Evaluating linked entities against YAML rules.")
-    ruleViolations = []
+    possibleViolations = []
 
     # Retrieve rule information
     for rule in yamlRules:
@@ -960,7 +960,7 @@ def evaluateRules(yamlRules, linkedEntities, auth_sessions):
                                 inconclusiveInfo.append(res)
 
                     if triggeredInfo or inconclusiveInfo:
-                        ruleViolations.append({
+                        possibleViolations.append({
                             "entity": key,
                             "rule_id": rule.get("id"),
                             "rule_name": rule.get("name"),
@@ -970,16 +970,29 @@ def evaluateRules(yamlRules, linkedEntities, auth_sessions):
                             "inconclusive": inconclusiveInfo if inconclusiveInfo else None
                         })
 
-    # print(json.dumps(ruleViolations, indent=4))
-    filterForViolations(ruleViolations)
+    # print(json.dumps(possibleViolations, indent=4))
+    confirmedViolations = filterForViolations(possibleViolations)
 
-    return ruleViolations
+    if confirmedViolations:
+        print(confirmedViolations)
 
-def filterForViolations(ruleViolations):
-    violations_only = [rv for rv in ruleViolations if rv.get("violations")]
+    inconclusiveViolations = isInconclusive(possibleViolations)
 
-    print(violations_only)
+    if inconclusiveViolations:
+        print("Inconclusive:")
+        print(inconclusiveViolations)
+
+    return possibleViolations
+
+def filterForViolations(possibleViolations):
+    violations_only = [pv for pv in possibleViolations if pv.get("violations")]
+
     return violations_only
+
+def isInconclusive(possibleViolations):
+    inconclusive_only = [pv for pv in possibleViolations if not pv.get("violations") and pv.get("inconclusive")]
+
+    return inconclusive_only
 
 if __name__ == "__main__":
     while True:
