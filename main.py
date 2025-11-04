@@ -592,7 +592,7 @@ def get_datetime(linkedEntities, srcLog):
             macb = e.get("macb")
 
             # Check if $MFT has the particular MACB variant that is being looked for
-            if expectedMACB not in macb:
+            if expectedMACB != macb:
                 continue
 
             dt = e.get("datetime")
@@ -645,7 +645,49 @@ def get_datetime(linkedEntities, srcLog):
                 valid_times.append(pd.to_datetime(dt))
 
     # USNJournal Handling
-    # elif src_name == "$USN_JOURNAL":
+    elif src_name == "$USN_JOURNAL":
+        VALID_USN_REASONS = {
+            "USN_REASON_DATA_OVERWRITE",
+            "USN_REASON_DATA_EXTEND",
+            "USN_REASON_DATA_TRUNCATION",
+            "USN_REASON_BASIC_INFO_CHANGE",
+            "USN_REASON_FILE_CREATE",
+            "USN_REASON_FILE_DELETE",
+            "USN_REASON_CLOSE",
+            "USN_REASON_RENAME_OLD_NAME",
+            "USN_REASON_RENAME_NEW_NAME",
+            "USN_REASON_SECURITY_CHANGE",
+            "USN_REASON_STREAM_CHANGE",
+            "USN_REASON_OBJECT_ID_CHANGE",
+            "USN_REASON_HARD_LINK_CHANGE",
+            "USN_REASON_REPARSE_POINT_CHANGE"
+        }
+
+        selectedReasons = [reason.strip().upper() for reason in attr.split("|")]
+
+        if not selectedReasons:
+            return []
+        
+        for e in entries:
+            if not e.get("isValidTime", True):
+                continue
+
+            desc = e.get("long_description").strip()
+            match = re.search(r"Update reason:\s*(.+)", desc)
+
+            if not match:
+                continue
+            
+            reasons_raw = match.group(1)
+            found_reasons = re.findall(r"USN_REASON_[A-Z_]+", reasons_raw.upper())
+
+            if set(found_reasons) == set(selectedReasons):
+                dt = e.get("datetime")
+
+                if not dt:
+                    continue
+
+                valid_times.append(pd.to_datetime(dt))
 
     # Other log types
     else:
