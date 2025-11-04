@@ -467,25 +467,24 @@ def parseLinkedEntities():
     return data
 
 # Function: Parse power on/off events from JSON
-def parsePowerEvents():
-    path = os.path.join('source', 'power_events.json')
+def parseAuthenticationEvents():
+    path = os.path.join('source', 'winlogauthentication_events.json')
     if not os.path.exists(path):
-        print("[-] power_events.json not found.")
+        print("[-] winlogauthentication_events.json not found.")
         return []
 
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    on_events = data.get("on", [])
-    off_events = data.get("off", [])
+    on_events = data.get("logon", [])
+    off_events = data.get("logoff", [])
 
     # Deduplicate based on timestamp
-    on_events = list({e["timestamp"]: e for e in on_events if "timestamp" in e}.values())
-    off_events = list({e["timestamp"]: e for e in off_events if "timestamp" in e}.values())
-
-    # Sort by timestamp
-    on_events = sorted(on_events, key=lambda x: x["timestamp"])
-    off_events = sorted(off_events, key=lambda x: x["timestamp"])
+    on_events = sorted([e for e in data.get("logon", []) if "timestamp" in e],
+                       key=lambda x: x["timestamp"])
+    
+    off_events = sorted([e for e in data.get("logoff", []) if "timestamp" in e],
+                        key=lambda x: x["timestamp"])
 
     # Parse timestamp format like "09/14/2025T06:32:25"
     def parse_ts(ts):
@@ -502,20 +501,40 @@ def parsePowerEvents():
     # print(f"Off Time: {off_times}")
 
     # Pair each shutdown → next startup
-    boot_sessions = []
-    for off_time, off_code in off_times:
-        # Find the first startup event *after* this shutdown
-        next_on = next(((t, c) for t, c in on_times if t > off_time), None)
-        if next_on:
-            on_time, on_code = next_on
-            boot_sessions.append({
-                "next_boot_start": on_time,
-                "previous_boot_end": off_time,
-                "on_code": on_code,
-                "off_code": off_code
-            })
+    auth_sessions = []
+    off_idx = 0
 
-    return boot_sessions
+    for on_time, on_code in on_times:
+        # paired = False
+        while off_idx < len(off_times):
+            off_time, off_code = off_times[off_idx]
+
+            if off_time > on_time:
+                auth_sessions.append({
+                    "logon_start": on_time,
+                    "logoff_end": off_time,
+                    "on_code": on_code,
+                    "off_code": off_code,
+                    # "status": "closed"
+                })
+
+                off_idx += 1
+                # paired = True
+                break
+            
+            off_idx += 1
+        
+        # if not paired:
+        #     # no later logoff → open session
+        #     auth_sessions.append({
+        #         "logon_start": on_time,
+        #         "logoff_end": None,
+        #         "on_code": on_code,
+        #         "off_code": None,
+        #         "status": "open"
+        #     })
+            
+    return auth_sessions
 
 # Function: Parse YAML Rules
 def parseYAMLRules(yaml_path):
@@ -648,15 +667,15 @@ def get_datetime(linkedEntities, srcLog):
     return valid_times
 
 # Function: Evaluate Conditions
-def evalCondition(condition, linkedEntities, boot_sessions):
+def evalCondition(condition, linkedEntities, auth_sessions):
     condition = condition.strip()
     
     # --- RULE HANDLER SECTION ---
     # Major Rule 1 Handler:
     # Example:
-    # - datetime($MFT) not between (BOOT_SESSIONS)
-    # - datetime($MFT, macb='m.c.') not between (BOOT_SESSIONS) [or any other MACB variants, m.c. tested here since it matches an event in our linkedEntities]
-    if "not between (BOOT_SESSIONS)" in condition:    
+    # - datetime($MFT) not between (AUTHENTICATION_SESSIONS)
+    # - datetime($MFT, macb='m.c.') not between (AUTHENTICATION_SESSIONS) [or any other MACB variants, m.c. tested here since it matches an event in our linkedEntities]
+    if "not between (AUTH_SESSIONS)" in condition:   
         src_match = re.search(r"datetime\(([^),]+)", condition)
         srcLog = src_match.group(1).strip()
 
@@ -673,52 +692,75 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                 }
             }
         
-        if not boot_sessions:
+        if not auth_sessions:
             return {
                 "violated": False,
                 "inconclusive": True,
-                "reason": "boot_sessions_not_found",
+                "reason": "auth_sessions_not_found",
                 "context": {
-                    "description": f"Boot sessions missing."
+                    "description": f"Auth sessions missing."
                 }
             }
         
-        # Iterate through every matched timestamp & check against boot sessions
+        # Iterate through every matched timestamp & check against auth sessions
         for ts in timestamps:
-            # outOfSession = any((pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])) for session in boot_sessions)
-            offendingSession = next((session for session in boot_sessions if pd.to_datetime(session["previous_boot_end"]) <= ts <= pd.to_datetime(session["next_boot_start"])), None)
-            
-            # Found a timestamp outside boot sessions
+            offendingSession = next(
+                (
+                    {
+                        "after_logoff": prev["logoff_end"],
+                        "before_logon": nxt["logon_start"],
+                        "off_code": prev.get("off_code"),
+                        "on_code": nxt.get("on_code")
+                    }
+                    for prev, nxt in zip(auth_sessions, auth_sessions[1:])
+                    if prev["logoff_end"] and nxt["logon_start"] and prev["logoff_end"] <= ts <= nxt["logon_start"]
+                ),
+                None
+            )
+
+            # If it's after the last logoff (and there's no new logon)
+            if not offendingSession and auth_sessions:
+                last_session = auth_sessions[-1]
+                if last_session["logoff_end"] and ts > last_session["logoff_end"]:
+                    offendingSession = {
+                        "after_logoff": last_session["logoff_end"],
+                        "before_logon": None,
+                        "off_code": last_session.get("off_code"),
+                        "on_code": None,
+                        "note": "post_final_logoff"
+                    }
+
+            # Found a timestamp outside auth sessions
             # if outOfSession:
             if offendingSession:
                 # Find closest power-off context for context reporting
-                next_boot_start = pd.to_datetime(offendingSession.get("next_boot_start"))
-                previous_boot_end = pd.to_datetime(offendingSession.get("previous_boot_end"))
+                after_logoff = pd.to_datetime(offendingSession.get("after_logoff"))
+                before_logon = pd.to_datetime(offendingSession.get("before_logon"))
                 on_code = offendingSession.get("on_code", "")
                 off_code = offendingSession.get("off_code", "")
             
                 return {
                     "violated": True,
-                    "boot_sessions_involvement": True,
+                    "auth_sessions_involvement": True,
                     "violating_event": {
                         "src": srcLog,
                         "timestamp": str(ts),
                         "operator": "not between"
                     },
                     "context": {
-                        "boot_session": {
-                            "next_boot_start": str(next_boot_start),
-                            "previous_boot_end": str(previous_boot_end),
+                        "auth_session": {
+                            "previous_auth_end": str(after_logoff),
+                            "next_auth_start": str(before_logon),
                             "on_code": on_code,
                             "off_code": off_code,
                         },
                         "description": (
-                            f"File timestamp {ts} falls outside the last known boot session (Previous Power Off @ {previous_boot_end} (Event Code: {off_code}); Next Power On @ {next_boot_start} (Event Code: {on_code})."
+                            f"File timestamp {ts} falls outside the last known authentication session (Previous Logoff @ {after_logoff} (Event Code: {off_code}); Next Logon @ {before_logon} (Event Code: {on_code})."
                         )
                     }
                 }
         
-        # All timestamps are within boot sessions
+        # All timestamps are within auth sessions
         return {"violated": False}
 
     # Major Rule 2 Handler:
@@ -787,7 +829,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                 if cmp_map[op](left_time, right_time):
                     return {
                         "violated": True,
-                        "boot_sessions_involvement": False,
+                        "auth_sessions_involvement": False,
                         "violating_event": {
                             "left_src": left_entity,
                             "left_timestamp": str(left_time),
@@ -832,7 +874,7 @@ def matchTarget(key, target):
 
 # Function: Rule Evaluation
 # To be implemented: ensure rules are structurally correct and all fields can be obtained
-def evaluateRules(yamlRules, linkedEntities, boot_sessions):
+def evaluateRules(yamlRules, linkedEntities, auth_sessions):
     print("[RULE EVALUATION] Evaluating linked entities against YAML rules.")
     ruleViolations = []
 
@@ -852,7 +894,7 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
 
                     if "any_of" in logic:
                         for condition in logic["any_of"]:
-                            result = evalCondition(condition["condition"], evidence, boot_sessions)
+                            result = evalCondition(condition["condition"], evidence, auth_sessions)
                             if result.get("violated"):
                                 triggeredInfo.append(result)
 
@@ -863,7 +905,7 @@ def evaluateRules(yamlRules, linkedEntities, boot_sessions):
                     elif "all_of" in logic:
                         allResults = []
                         for condition in logic["all_of"]:
-                            result = evalCondition(condition["condition"], evidence, boot_sessions)
+                            result = evalCondition(condition["condition"], evidence, auth_sessions)
                             allResults.append(result)
 
                         # Check if all conditions are violated
@@ -985,8 +1027,8 @@ if __name__ == "__main__":
 
             # Parse power on/off events
             print("[+] Parsing power on/off events.")
-            boot_sessions = parsePowerEvents()
-            # print(boot_sessions)
+            auth_sessions = parseAuthenticationEvents()
+            # print(auth_sessions)
 
             # Parse YAML rules for detection
             print("[+] Parsing YAML Rules.")
@@ -999,7 +1041,7 @@ if __name__ == "__main__":
             print(f"[YAML PARSER] {len(yamlRules)} rules parsed successfully.")
 
             # Validate linked entities against rules
-            evaluateRules(yamlRules, linkedEntities, boot_sessions)
+            evaluateRules(yamlRules, linkedEntities, auth_sessions)
         
         elif electedOption == '4':
             print("Exiting program.")
