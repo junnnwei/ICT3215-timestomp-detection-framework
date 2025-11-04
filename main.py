@@ -1,5 +1,5 @@
 import pandas as pd
-import os, json, re, yaml, networkx, datetime, subprocess, glob
+import os, json, re, yaml, networkx, datetime, subprocess, glob, fnmatch
 
 # Global Declaration
 linkedEntities = {}
@@ -516,7 +516,6 @@ def parsePowerEvents():
 
     return boot_sessions
 
-
 # Function: Parse YAML Rules
 def parseYAMLRules(yaml_path):
     if not os.path.exists(yaml_path):
@@ -641,6 +640,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                         "src": srcLog,
                         "timestamp": str(ts),
                         "macb_filter": macb_filter or "N/A",
+                        "operator": "not between"
                     },
                     "context": {
                         "boot_session": {
@@ -654,7 +654,7 @@ def evalCondition(condition, linkedEntities, boot_sessions):
                         )
                     }
                 }
-            
+        
         # All timestamps are within boot sessions
         return {"violated": False}
 
@@ -747,61 +747,90 @@ def evalCondition(condition, linkedEntities, boot_sessions):
 
     # --- Default return for unhandled rule types ---
     return {"violated": False}
+
+# Function: Target matching
+def matchTarget(key, target):
+    if not isinstance(key, str) or not isinstance(target, str):
+        return False
     
+    # Match key against rule target; supporting exact match, substring match, wildcard and regex
+    key = key.lower().strip()
+    target = target.lower().strip()
+
+    # Regex signature
+    if target.startswith("r/"):
+        pattern = target[2:]
+        return re.fullmatch(pattern, key) is not None
+
+    # Wildcard
+    elif "*" in target:
+        return fnmatch.fnmatch(key, target)
+
+    # Substring
+    elif target in key:
+        return True
+    
+    else:
+        return key == target
+
 # Function: Rule Evaluation
 # To be implemented: ensure rules are structurally correct and all fields can be obtained
 def evaluateRules(yamlRules, linkedEntities, boot_sessions):
     print("[RULE EVALUATION] Evaluating linked entities against YAML rules.")
     ruleViolations = []
-    for key, evidence in linkedEntities.items():
-        # For testing purposes, only evaluate a specific key
-        # if key == "users/timel/desktop/cases/creation_future.exe":
-        # if key == "users/timel/downloads/ntimestomp_v1.2_x64.exe":
-        # print(key, evidence)
-        for rule in yamlRules:
-            logic = rule.get("logic", {})
-            triggeredInfo = []
-            inconclusiveInfo = []
 
-            if "any_of" in logic:
-                for condition in logic["any_of"]:
-                    result = evalCondition(condition["condition"], evidence, boot_sessions)
-                    if result.get("violated"):
-                        triggeredInfo.append(result)
+    # Retrieve rule information
+    for rule in yamlRules:
+        # Default to all of the keys, but used for error handling. Preferably use "*"
+        targets = rule.get("targets", list(linkedEntities.keys()))
+        logic = rule.get("logic", {})
 
-                    # To be done: handle inconclusive separately
-                    elif result.get("inconclusive") and result not in inconclusiveInfo:
-                        inconclusiveInfo.append(result)
+        for target in targets:
+            for key, evidence in linkedEntities.items():
+                # For testing purposes, only evaluate a specific key
+                # if key == "users/timel/desktop/cases/creation_future.exe":
+                if matchTarget(key, target):
+                    triggeredInfo = []
+                    inconclusiveInfo = []
 
-            elif "all_of" in logic:
-                allResults = []
-                for condition in logic["all_of"]:
-                    result = evalCondition(condition["condition"], evidence, boot_sessions)
-                    allResults.append(result)
+                    if "any_of" in logic:
+                        for condition in logic["any_of"]:
+                            result = evalCondition(condition["condition"], evidence, boot_sessions)
+                            if result.get("violated"):
+                                triggeredInfo.append(result)
 
-                # Check if all conditions are violated
-                if all(res.get("violated") for res in allResults):
-                    triggeredInfo.extend(allResults)
-                
-                # Collect inconclusive results
-                for res in allResults:
-                    if res.get("inconclusive") and res not in inconclusiveInfo:
-                        inconclusiveInfo.append(res)
+                            # To be done: handle inconclusive separately
+                            elif result.get("inconclusive") and result not in inconclusiveInfo:
+                                inconclusiveInfo.append(result)
 
-            if triggeredInfo or inconclusiveInfo:
-                ruleViolations.append({
-                    "entity": key,
-                    "rule_id": rule.get("id"),
-                    "rule_name": rule.get("name"),
-                    "severity": rule.get("severity"),
-                    "explanation": rule.get("explanation"),
-                    "violations": triggeredInfo if triggeredInfo else None,
-                    "inconclusive": inconclusiveInfo if inconclusiveInfo else None
-                })
+                    elif "all_of" in logic:
+                        allResults = []
+                        for condition in logic["all_of"]:
+                            result = evalCondition(condition["condition"], evidence, boot_sessions)
+                            allResults.append(result)
 
-    print(json.dumps(ruleViolations, indent=4))
+                        # Check if all conditions are violated
+                        if all(res.get("violated") for res in allResults):
+                            triggeredInfo.extend(allResults)
+                        
+                        # Collect inconclusive results
+                        for res in allResults:
+                            if res.get("inconclusive") and res not in inconclusiveInfo:
+                                inconclusiveInfo.append(res)
 
-    # filterForViolations(ruleViolations)
+                    if triggeredInfo or inconclusiveInfo:
+                        ruleViolations.append({
+                            "entity": key,
+                            "rule_id": rule.get("id"),
+                            "rule_name": rule.get("name"),
+                            "severity": rule.get("severity"),
+                            "explanation": rule.get("explanation"),
+                            "violations": triggeredInfo if triggeredInfo else None,
+                            "inconclusive": inconclusiveInfo if inconclusiveInfo else None
+                        })
+
+    # print(json.dumps(ruleViolations, indent=4))
+    filterForViolations(ruleViolations)
 
     return ruleViolations
 

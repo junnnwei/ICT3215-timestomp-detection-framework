@@ -4,11 +4,8 @@ rules:
   #   description: "File executed before any creation evidence exists."
   #   severity: "High"
 
-  #   entities:
-  #     - "$MFT"
-  #     - "PREFETCH"
-  #     - "AMCACHE"
-  #     - "APPCOMPATCACHE"
+  #   targets:
+  #   - "*"
 
   #   logic:
   #     any_of:
@@ -20,9 +17,7 @@ rules:
   # - id: TS002
   #   name: "Modification-During-Power-Off"
   #   severity: "Critical"
-  #   entities:
-  #     - "$MFT"
-  #     - "BOOT_SESSIONS"
+
   #   logic:
   #     all_of:
   #       - condition: "datetime($MFT, macb='...b') not between (BOOT_SESSIONS)"
@@ -32,9 +27,10 @@ rules:
   # - id: TS003
   #   name: "Prefetch-Execution-During-Power-Off"
   #   severity: "High"
-  #   entities:
-  #     - "PREFETCH"
-  #     - "BOOT_SESSIONS"
+
+  #   targets:
+  #   - "*"
+  
   #   logic:
   #     all_of:
   #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
@@ -45,11 +41,8 @@ rules:
     description: "File executed before any creation evidence exists."
     severity: "High"
 
-    entities:
-      - "$MFT"
-      - "PREFETCH"
-      - "AMCACHE"
-      - "APPCOMPATCACHE"
+    targets:
+    - "*"
 
     logic:
       any_of:
