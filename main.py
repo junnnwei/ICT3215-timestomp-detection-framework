@@ -463,6 +463,16 @@ def deriveLinkedEntities(row):
 def parseLinkedEntities():
     with open(os.path.join('source', 'linked_entities.json'), 'r', encoding='utf-8') as f:
         data = json.load(f)
+    
+    for key, value in data.items():
+        for src_name, entries in value.items():
+            for e in entries:
+                dt = e.get("datetime")
+                if isinstance(dt, str):
+                    try:
+                        e["datetime"] = pd.Timestamp(dt)
+                    except:
+                        e["datetime"] = None
 
     return data
 
@@ -646,22 +656,22 @@ def get_datetime(linkedEntities, srcLog):
 
     # USNJournal Handling
     elif src_name == "$USN_JOURNAL":
-        VALID_USN_REASONS = {
-            "USN_REASON_DATA_OVERWRITE",
-            "USN_REASON_DATA_EXTEND",
-            "USN_REASON_DATA_TRUNCATION",
-            "USN_REASON_BASIC_INFO_CHANGE",
-            "USN_REASON_FILE_CREATE",
-            "USN_REASON_FILE_DELETE",
-            "USN_REASON_CLOSE",
-            "USN_REASON_RENAME_OLD_NAME",
-            "USN_REASON_RENAME_NEW_NAME",
-            "USN_REASON_SECURITY_CHANGE",
-            "USN_REASON_STREAM_CHANGE",
-            "USN_REASON_OBJECT_ID_CHANGE",
-            "USN_REASON_HARD_LINK_CHANGE",
-            "USN_REASON_REPARSE_POINT_CHANGE"
-        }
+        # VALID_USN_REASONS = {
+        #     "USN_REASON_DATA_OVERWRITE",
+        #     "USN_REASON_DATA_EXTEND",
+        #     "USN_REASON_DATA_TRUNCATION",
+        #     "USN_REASON_BASIC_INFO_CHANGE",
+        #     "USN_REASON_FILE_CREATE",
+        #     "USN_REASON_FILE_DELETE",
+        #     "USN_REASON_CLOSE",
+        #     "USN_REASON_RENAME_OLD_NAME",
+        #     "USN_REASON_RENAME_NEW_NAME",
+        #     "USN_REASON_SECURITY_CHANGE",
+        #     "USN_REASON_STREAM_CHANGE",
+        #     "USN_REASON_OBJECT_ID_CHANGE",
+        #     "USN_REASON_HARD_LINK_CHANGE",
+        #     "USN_REASON_REPARSE_POINT_CHANGE"
+        # }
 
         selectedReasons = [reason.strip().upper() for reason in attr.split("|")]
 
@@ -914,6 +924,65 @@ def matchTarget(key, target):
     else:
         return key == target
 
+# Function: Filter evidence within specified timeframe
+def filterEntitiesByRange(linkedEntities, timeframe=None):
+    if not timeframe or not isinstance(timeframe, str) or timeframe.strip() == "":
+        return linkedEntities
+
+    cmp = {
+        "<": lambda a, b: a < b,
+        "<=": lambda a, b: a <= b,
+        ">": lambda a, b: a > b,
+        ">=": lambda a, b: a >= b,
+        "==": lambda a, b: a == b,
+        "!=": lambda a, b: a != b,
+    }
+
+    parts = [p.strip() for p in timeframe.split("and") if p.strip()]
+    conditions = []
+
+    for part in parts:
+        m = re.match(r"(>=|<=|>|<|==|!=)\s*([\d\-:\sT]+)", part.strip())
+        if not m:
+            continue
+
+        op, val = m.groups()
+        ts = pd.to_datetime(val.strip(), errors="coerce")
+
+        # Include full day for <= or <
+        if ts.time() == datetime.time(0, 0):
+            if op in ("<", "<="):
+                ts = ts + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
+        
+        conditions.append((op, ts))
+
+    if not conditions:
+        print(f"[WARNING] No valid timeframe parsed from: {timeframe}")
+        return {}
+
+    filtered = {}
+
+    for key, sources in linkedEntities.items():
+        for src_name, entries in sources.items():
+            valid_entries = []
+            for e in entries:
+                dt = e.get("datetime")
+                if not dt:
+                    continue
+
+                dt = pd.to_datetime(dt, errors="coerce")
+                if pd.isna(dt):
+                    continue
+
+                if all(cmp[op](dt, ts) for op, ts in conditions):
+                    valid_entries.append(e)
+
+            if valid_entries:
+                filtered.setdefault(key, {})[src_name] = valid_entries
+    
+    return filtered
+
+
 # Function: Rule Evaluation
 # To be implemented: ensure rules are structurally correct and all fields can be obtained
 def evaluateRules(yamlRules, linkedEntities, auth_sessions):
@@ -981,6 +1050,9 @@ def evaluateRules(yamlRules, linkedEntities, auth_sessions):
     if inconclusiveViolations:
         print("Inconclusive:")
         print(inconclusiveViolations)
+    
+    if not confirmedViolations and not inconclusiveViolations:
+        print("[NO VIOLATIONS] All results are not in violation and did not return any inconclusive verdict.")
 
     return possibleViolations
 
@@ -1077,13 +1149,8 @@ if __name__ == "__main__":
         elif electedOption == '3':
             # Read linkedEntities
             print("[+] Parsing linked entities from JSON.")
-            linkedEntities = parseLinkedEntities()
+            linkedEntitiesUnfiltered = parseLinkedEntities()
             print("[+] Linked entities parsed successfully.")
-
-            # Parse power on/off events
-            print("[+] Parsing power on/off events.")
-            auth_sessions = parseAuthenticationEvents()
-            # print(auth_sessions)
 
             # Parse YAML rules for detection
             print("[+] Parsing YAML Rules.")
@@ -1092,8 +1159,19 @@ if __name__ == "__main__":
             if yamlRules is None:
                 print("[-] Failed to parse YAML rules. Please check the file.")
                 continue
-
+            
             print(f"[YAML PARSER] {len(yamlRules)} rules parsed successfully.")
+
+            # Retrieve specified timeframe
+            for rule in yamlRules:
+                timeframe = rule.get("timeframe", None)
+
+            linkedEntities = filterEntitiesByRange(linkedEntitiesUnfiltered, timeframe)
+            
+            # Parse power on/off events
+            print("[+] Parsing power on/off events.")
+            auth_sessions = parseAuthenticationEvents()
+            # print(auth_sessions)
 
             # Validate linked entities against rules
             evaluateRules(yamlRules, linkedEntities, auth_sessions)
