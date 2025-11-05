@@ -476,7 +476,7 @@ def parseLinkedEntities():
 
     return data
 
-# Function: Parse Winlogon (7002)/Winlogoff (7002) events from JSON
+# Function: Parse Winlogon (7001)/Winlogoff (7002) events from JSON
 def parseAuthenticationEvents():
     """ Returns authentication pairs; this project assumes that there'll no clean startup and shutdowns, thereby forming pairs. Future work: power on/off events"""
     path = os.path.join('source', 'winlogauthentication_events.json')
@@ -674,6 +674,15 @@ def get_datetime(linkedEntities, srcLog):
         #     "USN_REASON_REPARSE_POINT_CHANGE"
         # }
 
+        modeMatch = re.search(r"mode=['\"](strict|lax)['\"]", attr, re.I)
+
+        if modeMatch:
+            mode = modeMatch.group(1).lower()
+            attr = re.sub(r",?\s*mode=['\"].+?['\"]", "", attr)
+        
+        else:
+            mode = "lax"
+
         selectedReasons = [reason.strip().upper() for reason in attr.split("|")]
 
         if not selectedReasons:
@@ -691,10 +700,20 @@ def get_datetime(linkedEntities, srcLog):
             
             reasons_raw = match.group(1)
             found_reasons = re.findall(r"USN_REASON_[A-Z_]+", reasons_raw.upper())
-
-            if set(found_reasons) == set(selectedReasons):
+            
+            # NEW (5 Nov 25): Introduce strict/lax mode
+            matched = False
+            
+            if mode == "strict":
+                # Require set of reasons to match exactly
+                matched = set(found_reasons) == set(selectedReasons)
+            
+            else:
+                # Either one of the reasons appear
+                matched = any(r in found_reasons for r in selectedReasons)
+            
+            if matched:     
                 dt = e.get("datetime")
-
                 if not dt:
                     continue
 
@@ -876,6 +895,7 @@ def evalCondition(condition, linkedEntities, auth_sessions):
         if not left_timestamps or not right_timestamps:
             return {"violated": False}
         
+        # Uncomment to show example for USN_REASON_CLOSE against creation_future.exe in report
         # print(f"Left Timestamps: {left_timestamps}, Right Timestamps: {right_timestamps}")
         for left_time in left_timestamps:
             for right_time in right_timestamps:

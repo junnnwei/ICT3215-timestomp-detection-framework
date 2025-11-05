@@ -70,5 +70,5 @@ rules:
         # - condition: "datetime(PREFETCH.firstrun) < datetime($MFT.modified_metachange)"
         # - condition: "datetime(AMCACHE.datetime) < datetime($MFT.modified_metachange)"
         # - condition: "datetime(APPCOMPATCACHE.datetime) < datetime($MFT.modified_metachange)"
-        - condition: "datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE) < datetime($MFT.creation)"
+        - condition: "datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE, mode=lax) < datetime($MFT.creation)"
       explanation: "Execution evidence predates file creation - possible timestomping."
