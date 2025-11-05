@@ -657,22 +657,22 @@ def get_datetime(linkedEntities, srcLog):
 
     # USNJournal Handling
     elif src_name == "$USN_JOURNAL":
-        # VALID_USN_REASONS = {
-        #     "USN_REASON_DATA_OVERWRITE",
-        #     "USN_REASON_DATA_EXTEND",
-        #     "USN_REASON_DATA_TRUNCATION",
-        #     "USN_REASON_BASIC_INFO_CHANGE",
-        #     "USN_REASON_FILE_CREATE",
-        #     "USN_REASON_FILE_DELETE",
-        #     "USN_REASON_CLOSE",
-        #     "USN_REASON_RENAME_OLD_NAME",
-        #     "USN_REASON_RENAME_NEW_NAME",
-        #     "USN_REASON_SECURITY_CHANGE",
-        #     "USN_REASON_STREAM_CHANGE",
-        #     "USN_REASON_OBJECT_ID_CHANGE",
-        #     "USN_REASON_HARD_LINK_CHANGE",
-        #     "USN_REASON_REPARSE_POINT_CHANGE"
-        # }
+        VALID_USN_REASONS = {
+            "USN_REASON_DATA_OVERWRITE",
+            "USN_REASON_DATA_EXTEND",
+            "USN_REASON_DATA_TRUNCATION",
+            "USN_REASON_BASIC_INFO_CHANGE",
+            "USN_REASON_FILE_CREATE",
+            "USN_REASON_FILE_DELETE",
+            "USN_REASON_CLOSE",
+            "USN_REASON_RENAME_OLD_NAME",
+            "USN_REASON_RENAME_NEW_NAME",
+            "USN_REASON_SECURITY_CHANGE",
+            "USN_REASON_STREAM_CHANGE",
+            "USN_REASON_OBJECT_ID_CHANGE",
+            "USN_REASON_HARD_LINK_CHANGE",
+            "USN_REASON_REPARSE_POINT_CHANGE"
+        }
 
         modeMatch = re.search(r"mode=['\"](strict|lax)['\"]", attr, re.I)
 
@@ -1065,6 +1065,26 @@ def evaluateRules(yamlRules, linkedEntities, auth_sessions):
 
     if confirmedViolations:
         print(confirmedViolations)
+        # For nodal graph, output to json
+        output_file = 'violations_output.json'
+    
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(confirmedViolations, f, indent=2, ensure_ascii=False)
+            
+            print(f"\n[+] Violations exported to: {output_file}")
+            print(f"[+] Total violation records: {len(confirmedViolations)}")
+            
+            # Count actual violations vs inconclusive
+            actual_violations = [v for v in confirmedViolations if v.get('violations')]
+            inconclusive = [v for v in confirmedViolations if v.get('inconclusive')]
+            
+            print(f"    - Confirmed violations: {len(actual_violations)}")
+            print(f"    - Inconclusive results: {len(inconclusive)}")
+            print(f"\n[+] Run 'python nodal_graph.py' to generate visualizations")
+            
+        except Exception as e:
+            print(f"\n[ERROR] Failed to export violations: {str(e)}")
 
     inconclusiveViolations = isInconclusive(possibleViolations)
 
