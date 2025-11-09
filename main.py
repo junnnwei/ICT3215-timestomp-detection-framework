@@ -1107,6 +1107,65 @@ def isInconclusive(possibleViolations):
 
     return inconclusive_only
 
+# Wuhao stuff
+def build_on_off_structure_from_df(df: pd.DataFrame, output_json: str) -> None:
+    # Ensure timestamp column in ISO-like "YYYY-MM-DDTHH:MM:SS" (works with parser)
+    df = df.copy()
+    df['timestamp'] = df['date'].astype(str).str.strip() + "T" + df['time'].astype(str).str.strip()
+
+    on_codes = {'7001'}   # Winlogon
+    off_codes = {'7002'}  # Winlogoff
+    events = {"logon": [], "logoff": []}
+
+    # Provider must be Microsoft-Windows-Winlogon, then grab EventID
+    provider_regex = re.compile(
+        r'<Provider\s+[^>]*Name="Microsoft-Windows-Winlogon"[^>]*/?>',
+        re.IGNORECASE
+    )
+    _event_id_re = re.compile(
+        r'<EventID(?:\s+[^>]*)?>(\d+)</EventID>',
+        re.IGNORECASE
+    )
+
+    class EventIDWithProvider:
+        def __init__(self, provider_re, eventid_re):
+            self.provider_re = provider_re
+            self.eventid_re = eventid_re
+        def search(self, text):
+            if not text:
+                return None
+            if not self.provider_re.search(text):
+                return None
+            return self.eventid_re.search(text)
+
+    event_id_regex = EventIDWithProvider(provider_regex, _event_id_re)
+
+    added_logon = added_logoff = 0
+    for _, row in df.iterrows():
+        extra = str(row.get("extra", ""))
+
+        match = event_id_regex.search(extra)
+        if not match:
+            continue
+
+        code = match.group(1)
+        ts = str(row['timestamp'])
+
+        if code in on_codes:
+            events["logon"].append({"timestamp": ts, "code": code})
+            added_logon += 1
+        elif code in off_codes:
+            events["logoff"].append({"timestamp": ts, "code": code})
+            added_logoff += 1
+
+    os.makedirs(os.path.dirname(output_json), exist_ok=True)
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(events, f, indent=4)
+
+    print(f"[+] Wrote Winlogon on/off events → {output_json} "
+          f"(logon={added_logon}, logoff={added_logoff})")
+
+
 if __name__ == "__main__":
     while True:
         print("==================================================")
@@ -1179,6 +1238,9 @@ if __name__ == "__main__":
                 print(f"[+] Linked entities saved to: {output_path}")
 
                 print(f"[+] Deriving Windows events.")
+
+                auth_json_out = os.path.join('source', 'winlogauthentication_events.json')
+                build_on_off_structure_from_df(df, auth_json_out)
                 
                 # WuHao write your function/code here for deriving Windows events
 

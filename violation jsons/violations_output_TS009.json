@@ -1,0 +1,290 @@
+[
+  {
+    "entity": "users/timel/appdata/local/packages/microsoftwindows.client.cbs_cw5n1h2txyewy/localstate/ebwebview/speech recognition/1.15.0.1/microsoft.cognitiveservices.speech.core.dll",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:29",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:29:17",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:29 < $MFT.creation timestamp 2025-09-30 03:29:17"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "windows/systemtemp/{43b28852-a03c-44df-817e-525e9f8c0662}/ssshim.dll",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:19",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:22:32",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:19 < $MFT.creation timestamp 2025-09-30 03:22:32"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.zunemusic_11.2508.31.0_x64__8wekyb3d8bbwe/microsoft.media.player.fingerprinting.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:55:56",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:56:01",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:55:56 < $MFT.creation timestamp 2025-09-30 03:56:01"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.zunemusic_11.2508.31.0_x64__8wekyb3d8bbwe/microsoft.media.player.storage.uwp.utils.native.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:55:56",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:56:01",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:55:56 < $MFT.creation timestamp 2025-09-30 03:56:01"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.zunemusic_11.2508.31.0_x64__8wekyb3d8bbwe/microsoft.media.player.cdplayback.helpers.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:55:56",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:56:01",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:55:56 < $MFT.creation timestamp 2025-09-30 03:56:01"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.windowsappruntime.1.7_7000.617.2103.0_x86__8wekyb3d8bbwe/microsoft.foundation.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:44",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:23:47",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:44 < $MFT.creation timestamp 2025-09-30 03:23:47"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.xboxgamingoverlay_7.325.9112.0_x64__8wekyb3d8bbwe/xboxlib.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:27",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:22:50",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:27 < $MFT.creation timestamp 2025-09-30 03:22:50"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoft.microsoftsolitairecollection_4.23.9180.0_x64__8wekyb3d8bbwe/solitaire.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:29",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:23:03",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:29 < $MFT.creation timestamp 2025-09-30 03:23:03"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "users/timel/desktop/cases/prefetch_before_creation.exe",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 04:04:35",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-10-01 20:25:23",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 04:04:35 < $MFT.creation timestamp 2025-10-01 20:25:23"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "users/timel/desktop/cases/creation_future.exe",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:33:20",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2026-05-31 12:34:23",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:33:20 < $MFT.creation timestamp 2026-05-31 12:34:23"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoftwindows.crossdevice_0.25082.81.0_x64__cw5n1h2txyewy/crossdevicecomponentstub.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:29",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:23:27",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:29 < $MFT.creation timestamp 2025-09-30 03:23:27"
+        }
+      }
+    ],
+    "inconclusive": null
+  },
+  {
+    "entity": "program files/windowsapps/microsoftwindows.crossdevice_0.25082.81.0_x64__cw5n1h2txyewy/sharedutilities.stub.backgroundtasks.winmd",
+    "rule_id": "TS_009",
+    "rule_name": "USN-Before-MFT-Birth",
+    "severity": "HIGH",
+    "explanation": "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility",
+    "violations": [
+      {
+        "violated": true,
+        "auth_sessions_involvement": false,
+        "violating_event": {
+          "left_src": "$USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE",
+          "left_timestamp": "2025-09-30 03:22:29",
+          "right_src": "$MFT.creation",
+          "right_timestamp": "2025-09-30 03:23:27",
+          "operator": "<"
+        },
+        "context": {
+          "description": "Condition violated: $USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE timestamp 2025-09-30 03:22:29 < $MFT.creation timestamp 2025-09-30 03:23:27"
+        }
+      }
+    ],
+    "inconclusive": null
+  }
+]
