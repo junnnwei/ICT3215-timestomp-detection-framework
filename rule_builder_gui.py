@@ -4,7 +4,7 @@ Allows users to create, edit, and delete rules for timestomp_rules.yaml file.
 """
 
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import tkinter.font as tkfont
 import yaml
 import os
@@ -12,6 +12,8 @@ from typing import Dict, List, Any, Optional
 import sv_ttk
 import re
 from datetime import datetime
+import json
+import sys
 
 # Optional date picker support
 try:
@@ -20,11 +22,26 @@ try:
 except Exception:
     HAS_TKCALENDAR = False
 
+# Optional matplotlib support for graph viewer
+try:
+    import matplotlib
+    matplotlib.use('TkAgg')  # Use TkAgg backend for embedding in tkinter
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    from matplotlib.figure import Figure
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import pandas as pd
+    from textwrap import wrap
+    from matplotlib import patheffects as pe
+    HAS_MATPLOTLIB = True
+except Exception:
+    HAS_MATPLOTLIB = False
+
 
 class RuleBuilderGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Timestomp X Rule Builder")
+        self.root.title("Time Lord X")
         self.root.iconbitmap("logo.ico")
         self.root.geometry("1000x700")
         self.root.minsize(800, 600)  # Set minimum window size
@@ -62,11 +79,27 @@ class RuleBuilderGUI:
     
     def create_widgets(self):
         """Create and layout all GUI widgets."""
+        # Create notebook for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Tab 1: Rule Builder
+        self.rule_builder_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.rule_builder_frame, text="Rule Builder")
+        self.create_rule_builder_tab()
+        
+        # Tab 2: Nodal Graph Viewer
+        self.graph_viewer_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.graph_viewer_frame, text="Nodal Graph Viewer")
+        self.create_graph_viewer_tab()
+    
+    def create_rule_builder_tab(self):
+        """Create the rule builder tab content."""
         # Main container with padding
-        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame = ttk.Frame(self.rule_builder_frame, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.rule_builder_frame.columnconfigure(0, weight=1)
+        self.rule_builder_frame.rowconfigure(0, weight=1)
         
         # Left panel: Rule list
         left_panel = ttk.Frame(main_frame)
@@ -686,6 +719,384 @@ class RuleBuilderGUI:
     def open_custom_rule_builder(self):
         """Open the Custom Rule Builder modal window."""
         CustomRuleBuilder(self.root, self)
+    
+    def create_graph_viewer_tab(self):
+        """Create the nodal graph viewer tab."""
+        if not HAS_MATPLOTLIB:
+            error_frame = ttk.Frame(self.graph_viewer_frame)
+            error_frame.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(error_frame, text="Matplotlib is required for graph viewing.\nPlease install: pip install matplotlib pandas", 
+                     font=("Arial", 12), justify=tk.CENTER).pack(expand=True)
+            return
+        
+        # Top controls frame
+        controls_frame = ttk.Frame(self.graph_viewer_frame)
+        controls_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(controls_frame, text="Violations JSON:").pack(side=tk.LEFT, padx=(0, 5))
+        self.violations_file_var = tk.StringVar(value="violations_output_TS008.json")
+        violations_entry = ttk.Entry(controls_frame, textvariable=self.violations_file_var, width=40)
+        violations_entry.pack(side=tk.LEFT, padx=(0, 5))
+        
+        ttk.Button(controls_frame, text="Browse", command=self.browse_violations_file).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(controls_frame, text="Load & Generate Graphs", command=self.load_and_generate_graphs).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(controls_frame, text="Refresh", command=self.refresh_graph_viewer).pack(side=tk.LEFT)
+        
+        # Split view: violations list on left, graph on right
+        split_frame = ttk.Frame(self.graph_viewer_frame)
+        split_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Left: Violations list
+        list_frame = ttk.LabelFrame(split_frame, text="Violations", padding="5")
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+        list_frame.config(width=300)
+        
+        list_scrollbar = ttk.Scrollbar(list_frame)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.violations_listbox = tk.Listbox(list_frame, yscrollcommand=list_scrollbar.set, width=35)
+        self.violations_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        list_scrollbar.config(command=self.violations_listbox.yview)
+        self.violations_listbox.bind('<<ListboxSelect>>', self.on_violation_select)
+        
+        # Right: Graph display
+        graph_frame = ttk.LabelFrame(split_frame, text="Graph", padding="5")
+        graph_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.graph_canvas_frame = ttk.Frame(graph_frame)
+        self.graph_canvas_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.violations_data = []
+        self.rules_meta = {}
+    
+    def browse_violations_file(self):
+        """Browse for violations JSON file."""
+        filename = filedialog.askopenfilename(
+            title="Select Violations JSON File",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if filename:
+            self.violations_file_var.set(filename)
+    
+    def load_and_generate_graphs(self):
+        """Load violations and generate graphs."""
+        violations_file = self.violations_file_var.get()
+        if not os.path.exists(violations_file):
+            messagebox.showerror("Error", f"File not found: {violations_file}")
+            return
+        
+        try:
+            with open(violations_file, "r", encoding="utf-8") as f:
+                self.violations_data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load JSON: {str(e)}")
+            return
+        
+        if not isinstance(self.violations_data, list):
+            messagebox.showerror("Error", "JSON must contain a list of violations")
+            return
+        
+        # Load rule metadata
+        self.rules_meta = self.load_rule_metadata_for_graphs()
+        
+        # Filter violations with actual violation data
+        actual = [v for v in self.violations_data if v.get("violations")]
+        if not actual:
+            messagebox.showwarning("Warning", "No violations found in the file")
+            return
+        
+        # Populate listbox
+        self.violations_listbox.delete(0, tk.END)
+        for i, v in enumerate(actual, 1):
+            entity = v.get("entity", f"entity_{i}")
+            rule_id = v.get("rule_id", "UNKNOWN")
+            file_name = os.path.basename(entity) or entity
+            self.violations_listbox.insert(tk.END, f"{rule_id}: {file_name}")
+        
+        messagebox.showinfo("Success", f"Loaded {len(actual)} violations")
+    
+    def load_rule_metadata_for_graphs(self):
+        """Load rule metadata from YAML for graph generation."""
+        if not os.path.exists(self.rules_file):
+            return {}
+        try:
+            with open(self.rules_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            meta = {}
+            for r in data.get("rules", []):
+                rid = r.get("id")
+                if not rid:
+                    continue
+                meta[rid] = {
+                    "name": r.get("name", ""),
+                    "description": r.get("description", ""),
+                    "explanation": r.get("explanation", ""),
+                    "severity": (r.get("severity") or "MEDIUM").upper(),
+                }
+            return meta
+        except Exception:
+            return {}
+    
+    def on_violation_select(self, event):
+        """Handle violation selection and display graph."""
+        selection = self.violations_listbox.curselection()
+        if not selection or not self.violations_data:
+            return
+        
+        index = selection[0]
+        actual = [v for v in self.violations_data if v.get("violations")]
+        if index >= len(actual):
+            return
+        
+        violation = actual[index]
+        self.display_violation_graph(violation)
+    
+    def display_violation_graph(self, violation):
+        """Display graph for selected violation."""
+        # Clear existing graph
+        for widget in self.graph_canvas_frame.winfo_children():
+            widget.destroy()
+        
+        if not HAS_MATPLOTLIB:
+            return
+        
+        try:
+            # Create figure
+            fig = Figure(figsize=(16, 10))
+            ax = fig.add_subplot(111)
+            
+            # Draw violation using adapted nodal_graph functions
+            self.draw_violation_on_axes(violation, ax)
+            
+            # Embed in tkinter
+            canvas = FigureCanvasTkAgg(fig, self.graph_canvas_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+            
+            # Add toolbar at bottom
+            toolbar = NavigationToolbar2Tk(canvas, self.graph_canvas_frame)
+            toolbar.update()
+            toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to display graph: {str(e)}")
+    
+    def draw_violation_on_axes(self, violation, ax):
+        """Draw violation graph on matplotlib axes (adapted from nodal_graph.py)."""
+        # Constants from nodal_graph.py
+        SEVERITY_STYLES = {
+            "CRITICAL": {"border": "#7F1D1D", "bg": "#FCF2F2", "text": "#7F1D1D"},
+            "HIGH": {"border": "#B91C1C", "bg": "#FCEDED", "text": "#B91C1C"},
+            "MEDIUM": {"border": "#9A3412", "bg": "#FFF4E8", "text": "#9A3412"},
+            "LOW": {"border": "#7A5E00", "bg": "#FFFBE8", "text": "#7A5E00"},
+        }
+        ARTIFACT_COLORS = {
+            "$MFT": "#4CAF50", "PREFETCH": "#2196F3", "$USN_JOURNAL": "#EF4444",
+            "APPCOMPATCACHE": "#9C27B0", "PCA_LOG": "#FFEB3B",
+            "USERASSIST_REGKEY": "#795548", "AMCACHE": "#00BCD4",
+        }
+        
+        rule_id = violation.get("rule_id", "UNKNOWN")
+        entity = violation.get("entity", "Unknown")
+        severity = (violation.get("severity") or "MEDIUM").upper()
+        style = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["MEDIUM"])
+        
+        rules_row = self.rules_meta.get(rule_id, {})
+        rule_title = rules_row.get("name", "")
+        description = rules_row.get("description", "")
+        explanation = (rules_row.get("explanation") or "").strip()
+        
+        file_name = os.path.basename(entity) or entity
+        viols = violation.get("violations") or []
+        if not viols:
+            ax.text(0.5, 0.5, "No violations to display", ha="center", va="center", fontsize=14)
+            return
+        
+        v = viols[0].get("violating_event", {})
+        left_src, right_src = v.get("left_src", ""), v.get("right_src", "")
+        left_ts, right_ts = self.fmt_ts(v.get("left_timestamp")), self.fmt_ts(v.get("right_timestamp"))
+        left_art, left_sem = self.parse_artifact_semantic(left_src)
+        right_art, right_sem = self.parse_artifact_semantic(right_src)
+        
+        try:
+            if pd.to_datetime(right_ts) < pd.to_datetime(left_ts):
+                (left_art, right_art) = (right_art, left_art)
+                (left_sem, right_sem) = (right_sem, left_sem)
+                (left_ts, right_ts) = (right_ts, left_ts)
+        except Exception:
+            pass
+        
+        left_color = ARTIFACT_COLORS.get(left_art, "#94A3B8")
+        right_color = ARTIFACT_COLORS.get(right_art, "#4CAF50")
+        file_color = "#1F2937"
+        
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        ax.set_facecolor(style["bg"])
+        fig = ax.get_figure()
+        fig.patch.set_facecolor(style["bg"])
+        ax.set_aspect('equal', adjustable='box')
+        
+        # Header
+        ax.text(0.5, 0.965, f"SEVERITY: {severity}", ha="center", va="center",
+                fontsize=14, fontweight="bold", color=style["text"],
+                bbox=dict(boxstyle="round,pad=0.28", facecolor="white", edgecolor=style["border"], lw=1.5),
+                transform=ax.transAxes)
+        
+        title_text = rule_id if not rule_title else f"{rule_id}: {rule_title}"
+        ax.text(0.5, 0.91, title_text, ha="center", va="center",
+                fontsize=26, fontweight="bold", color=style["text"],
+                bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor=style["border"], lw=1.2),
+                transform=ax.transAxes)
+        
+        ax.text(0.5, 0.86, f"File: {file_name}   •   Violations: {len(viols)}",
+                ha="center", va="center", fontsize=14, color=style["text"], fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor=style["border"], lw=1.0),
+                transform=ax.transAxes)
+        
+        if description:
+            wrapped_desc = "\n".join(wrap(description or "", width=100))
+            ax.text(0.5, 0.815, wrapped_desc, ha="center", va="center", fontsize=12,
+                    color=style["text"],
+                    bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
+                    transform=ax.transAxes)
+        
+        # Nodes
+        y_center = 0.55
+        circle_r = 0.06
+        file_w, file_h = 0.24, 0.15
+        xs = [0.18, 0.50, 0.82]
+        
+        left_node = mpatches.Circle((xs[0], y_center), circle_r, fc=left_color, ec=style["border"],
+                                    lw=2.8, transform=ax.transAxes, zorder=2)
+        right_node = mpatches.Circle((xs[2], y_center), circle_r, fc=right_color, ec=style["border"],
+                                     lw=2.8, transform=ax.transAxes, zorder=2)
+        ax.add_patch(left_node)
+        ax.add_patch(right_node)
+        
+        file_node = mpatches.FancyBboxPatch(
+            (xs[1] - file_w/2, y_center - file_h/2), file_w, file_h,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            fc=file_color, ec=style["border"], lw=3.0, transform=ax.transAxes, zorder=2.5
+        )
+        ax.add_patch(file_node)
+        
+        # Callouts
+        def callout(x, lines):
+            ax.text(x, y_center - circle_r - 0.03, "\n".join([l for l in lines if l]),
+                    ha="center", va="top", fontsize=12, color="#111",
+                    bbox=dict(boxstyle="round,pad=0.14", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
+                    transform=ax.transAxes, zorder=3)
+        callout(xs[0], [left_art, left_sem, left_ts])
+        callout(xs[2], [right_art, right_sem, right_ts])
+        
+        # Arrows
+        y = y_center
+        pad = 0.008
+        arrow_kw = dict(arrowstyle="->", lw=4.2, color="#C62828", shrinkA=0, shrinkB=0, zorder=2.6)
+        ax.annotate("", xy=(xs[1] - file_w/2 - pad, y), xytext=(xs[0] + circle_r + pad, y),
+                    arrowprops=arrow_kw, transform=ax.transAxes)
+        ax.annotate("", xy=(xs[2] - circle_r - pad, y), xytext=(xs[1] + file_w/2 + pad, y),
+                    arrowprops=arrow_kw, transform=ax.transAxes)
+        
+        # Δt badge
+        dt = self.human_delta(left_ts, right_ts)
+        if dt:
+            ax.text(xs[1], y_center + file_h/2 + 0.05, f"Δt: {dt}",
+                    ha="center", va="bottom", fontsize=16, fontweight="bold", color=style["text"],
+                    bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor=style["border"], lw=1.2),
+                    transform=ax.transAxes, zorder=3)
+        
+        # FILE label
+        file_text_color = "#F3F4F6"  # Simplified
+        outline_effect = [pe.withStroke(linewidth=3.0, foreground='#000000', alpha=0.85)]
+        ax.text(xs[1], y_center + 0.01, file_name, ha="center", va="bottom", fontsize=14.5,
+                color=file_text_color, fontweight="bold", transform=ax.transAxes, zorder=4,
+                path_effects=outline_effect)
+        ax.text(xs[1], y_center - 0.01, "FILE", ha="center", va="top", fontsize=12,
+                color=file_text_color, fontweight="bold", transform=ax.transAxes, zorder=4,
+                path_effects=outline_effect)
+        
+        # Explanation
+        if explanation:
+            expl_text = "\n".join(wrap(explanation or "", width=110))
+            ax.text(0.5, 0.28, "Explanation", ha="center", va="bottom", fontsize=12.5,
+                    color=style["border"], fontweight="bold", transform=ax.transAxes)
+            ax.text(0.5, 0.27, expl_text, ha="center", va="top", fontsize=11,
+                    color=style["border"], fontstyle="italic",
+                    bbox=dict(boxstyle="round,pad=0.16", facecolor="white", edgecolor=style["border"], lw=0.8, alpha=0.96),
+                    transform=ax.transAxes, zorder=3)
+        
+        # Full path
+        ax.text(0.5, 0.12, f"Full Path: {entity}", ha="center", va="top", fontsize=11,
+                color="#555", bbox=dict(boxstyle="round,pad=0.12", facecolor="white", edgecolor="0.75", lw=0.0, alpha=0.85),
+                transform=ax.transAxes, zorder=3)
+    
+    def fmt_ts(self, ts_str):
+        """Format timestamp."""
+        try:
+            return pd.to_datetime(ts_str).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ts_str or ""
+    
+    def human_delta(self, a, b):
+        """Calculate human-readable time delta."""
+        try:
+            t1, t2 = pd.to_datetime(a), pd.to_datetime(b)
+            d = abs(t2 - t1)
+            days = d.days
+            s = d.seconds
+            hh, mm, ss = s // 3600, (s % 3600) // 60, s % 60
+            return f"{days} days {hh:02d}:{mm:02d}:{ss:02d}" if days else f"{hh:02d}:{mm:02d}:{ss:02d}"
+        except Exception:
+            return ""
+    
+    def parse_artifact_semantic(self, src):
+        """Parse artifact semantic information."""
+        if not src or "." not in src:
+            return src or "", ""
+        art, attr = src.split(".", 1)
+        art, attr = art.strip(), attr.strip()
+        
+        MACB_SEMANTICS = {
+            "....": "None", "...b": "Creation", "..c.": "MetaChange", "..cb": "MetaChange+Creation",
+            ".a..": "Accessed", ".a.b": "Accessed+Creation", ".ac.": "Accessed+MetaChange",
+            ".acb": "Accessed+MetaChange+Creation", "m...": "Modified", "m..b": "Modified+Creation",
+            "m.c.": "Modified+MetaChange", "m.cb": "Modified+MetaChange+Creation",
+            "ma..": "Modified+Accessed", "ma.b": "Modified+Accessed+Creation",
+            "mac.": "Modified+Accessed+MetaChange", "macb": "All (MACB)",
+        }
+        
+        if art == "$MFT":
+            macb_map = {
+                "creation": "...b", "metachange": "..c.", "accessed": ".a..", "modified": "m...",
+                "modified_creation": "m..b", "modified_metachange": "m.c.",
+                "modified_accessed_metachange_creation": "macb",
+            }
+            flag = macb_map.get(attr, attr)
+            return art, MACB_SEMANTICS.get(flag, attr)
+        
+        if art == "PREFETCH":
+            if attr == "firstrun":
+                return art, "First Run"
+            if attr == "lastrun":
+                return art, "Last Run"
+            if attr == "creation_time":
+                return art, "Created"
+            return art, attr.replace("_", " ").title()
+        
+        if art == "$USN_JOURNAL":
+            label = "\n".join([r.replace("USN_REASON_", "") for r in attr.split("|")])
+            return art, label
+        
+        return art, attr.replace("_", " ").title()
+    
+    def refresh_graph_viewer(self):
+        """Refresh the graph viewer."""
+        if self.violations_listbox.size() > 0:
+            self.violations_listbox.selection_set(0)
+            self.violations_listbox.event_generate("<<ListboxSelect>>")
 
 
 class CustomRuleBuilder:
