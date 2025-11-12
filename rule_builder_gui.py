@@ -11,9 +11,25 @@ import os
 from typing import Dict, List, Any, Optional
 import sv_ttk
 import re
-from datetime import datetime
+from datetime import datetime, time
 import json
 import sys
+import threading
+import subprocess
+import glob
+import fnmatch
+import pandas as pd
+import networkx
+
+# Import functions from existing modules
+try:
+    import main as main_module
+    import nodal_graph
+    HAS_MAIN_MODULES = True
+except ImportError:
+    HAS_MAIN_MODULES = False
+    main_module = None
+    print("Warning: Could not import main.py or nodal_graph.py. Some features may not work.")
 
 # Optional date picker support
 try:
@@ -31,7 +47,6 @@ try:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import pandas as pd
-    from textwrap import wrap
     from matplotlib import patheffects as pe
     HAS_MATPLOTLIB = True
 except Exception:
@@ -83,15 +98,143 @@ class RuleBuilderGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Tab 1: Rule Builder
+        # Tab 1: Data Import & Processing
+        self.data_import_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.data_import_frame, text="Data Import & Processing")
+        self.create_data_import_tab()
+        
+        # Tab 2: Rule Builder
         self.rule_builder_frame = ttk.Frame(self.notebook, padding="10")
         self.notebook.add(self.rule_builder_frame, text="Rule Builder")
         self.create_rule_builder_tab()
         
-        # Tab 2: Nodal Graph Viewer
+        # Tab 3: Rule Evaluation
+        self.rule_evaluation_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.rule_evaluation_frame, text="Rule Evaluation")
+        self.create_rule_evaluation_tab()
+        
+        # Tab 4: Nodal Graph Viewer
         self.graph_viewer_frame = ttk.Frame(self.notebook, padding="10")
         self.notebook.add(self.graph_viewer_frame, text="Nodal Graph Viewer")
         self.create_graph_viewer_tab()
+        
+        # Initialize global linkedEntities
+        self.linkedEntities = {}
+    
+    def create_data_import_tab(self):
+        """Create the Data Import & Processing tab."""
+        # Top section: File selection
+        files_frame = ttk.LabelFrame(self.data_import_frame, text="Source Files", padding="10")
+        files_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Timeline CSV
+        ttk.Label(files_frame, text="Timeline CSV:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.timeline_csv_var = tk.StringVar(value="source/timeline.csv")
+        ttk.Entry(files_frame, textvariable=self.timeline_csv_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(files_frame, text="Browse", command=self.browse_timeline_csv).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Amcache.hve
+        ttk.Label(files_frame, text="Amcache.hve:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.amcache_var = tk.StringVar(value="source/Amcache.hve")
+        ttk.Entry(files_frame, textvariable=self.amcache_var, width=50).grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(files_frame, text="Browse", command=self.browse_amcache).grid(row=1, column=2, padx=5, pady=5)
+        
+        # Prefetch folder
+        ttk.Label(files_frame, text="Prefetch Folder:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.prefetch_folder_var = tk.StringVar(value="source/prefetch")
+        ttk.Entry(files_frame, textvariable=self.prefetch_folder_var, width=50).grid(row=2, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(files_frame, text="Browse", command=self.browse_prefetch_folder).grid(row=2, column=2, padx=5, pady=5)
+        
+        files_frame.columnconfigure(1, weight=1)
+        
+        # Control buttons
+        buttons_frame = ttk.Frame(self.data_import_frame)
+        buttons_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Button(buttons_frame, text="Check Files", command=self.check_source_files).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Process & Link Entities", command=self.process_and_link_entities).pack(side=tk.LEFT, padx=5)
+        self.progress_var = tk.StringVar(value="Ready")
+        ttk.Label(buttons_frame, textvariable=self.progress_var).pack(side=tk.LEFT, padx=10)
+        
+        # Progress bar
+        self.progress_bar = ttk.Progressbar(self.data_import_frame, mode='indeterminate')
+        self.progress_bar.pack(fill=tk.X, pady=(0, 10))
+        
+        # Status/Log output
+        log_frame = ttk.LabelFrame(self.data_import_frame, text="Processing Log", padding="5")
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.import_log = scrolledtext.ScrolledText(log_frame, height=15, wrap=tk.WORD, font=("Consolas", 9))
+        self.import_log.pack(fill=tk.BOTH, expand=True)
+        self.import_log.insert("1.0", "Ready to process. Click 'Check Files' to verify source files.\n")
+        self.import_log.config(state=tk.DISABLED)
+        
+        # Summary frame
+        summary_frame = ttk.LabelFrame(self.data_import_frame, text="Linked Entities Summary", padding="5")
+        summary_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        self.summary_text = scrolledtext.ScrolledText(summary_frame, height=4, wrap=tk.WORD, font=("Consolas", 9))
+        self.summary_text.pack(fill=tk.BOTH, expand=True)
+        self.summary_text.insert("1.0", "No data processed yet.")
+        self.summary_text.config(state=tk.DISABLED)
+    
+    def create_rule_evaluation_tab(self):
+        """Create the Rule Evaluation tab."""
+        # Top section: File selection and controls
+        controls_frame = ttk.LabelFrame(self.rule_evaluation_frame, text="Evaluation Controls", padding="10")
+        controls_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Linked entities JSON
+        ttk.Label(controls_frame, text="Linked Entities JSON:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.linked_entities_json_var = tk.StringVar(value="source/linked_entities.json")
+        ttk.Entry(controls_frame, textvariable=self.linked_entities_json_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(controls_frame, text="Browse", command=self.browse_linked_entities_json).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Auth events JSON
+        ttk.Label(controls_frame, text="Auth Events JSON:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.auth_events_json_var = tk.StringVar(value="source/winlogauthentication_events.json")
+        ttk.Entry(controls_frame, textvariable=self.auth_events_json_var, width=50).grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(controls_frame, text="Browse", command=self.browse_auth_events_json).grid(row=1, column=2, padx=5, pady=5)
+        
+        # Rule selection
+        ttk.Label(controls_frame, text="Evaluate Rules:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.eval_all_rules_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls_frame, text="All Rules", variable=self.eval_all_rules_var).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        controls_frame.columnconfigure(1, weight=1)
+        
+        # Evaluation buttons
+        eval_buttons_frame = ttk.Frame(self.rule_evaluation_frame)
+        eval_buttons_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Button(eval_buttons_frame, text="Load Data", command=self.load_evaluation_data).pack(side=tk.LEFT, padx=5)
+        ttk.Button(eval_buttons_frame, text="Run Evaluation", command=self.run_rule_evaluation).pack(side=tk.LEFT, padx=5)
+        ttk.Button(eval_buttons_frame, text="Export Violations JSON", command=self.export_violations_json).pack(side=tk.LEFT, padx=5)
+        
+        self.eval_progress_var = tk.StringVar(value="Ready")
+        ttk.Label(eval_buttons_frame, textvariable=self.eval_progress_var).pack(side=tk.LEFT, padx=10)
+        
+        # Progress bar
+        self.eval_progress_bar = ttk.Progressbar(self.rule_evaluation_frame, mode='indeterminate')
+        self.eval_progress_bar.pack(fill=tk.X, pady=(0, 10))
+        
+        # Results display
+        results_frame = ttk.LabelFrame(self.rule_evaluation_frame, text="Evaluation Results", padding="5")
+        results_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Violations summary
+        summary_label = ttk.Label(results_frame, text="Violations Summary:", font=("Arial", 10, "bold"))
+        summary_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        self.violations_summary = scrolledtext.ScrolledText(results_frame, height=8, wrap=tk.WORD, font=("Consolas", 9))
+        self.violations_summary.pack(fill=tk.BOTH, expand=True)
+        self.violations_summary.insert("1.0", "No evaluation run yet.")
+        self.violations_summary.config(state=tk.DISABLED)
+        
+        # Store evaluation results
+        self.evaluation_results = []
+        self.linked_entities_data = {}
+        self.auth_sessions_data = []
     
     def create_rule_builder_tab(self):
         """Create the rule builder tab content."""
@@ -817,6 +960,9 @@ class RuleBuilderGUI:
     
     def load_rule_metadata_for_graphs(self):
         """Load rule metadata from YAML for graph generation."""
+        if HAS_MAIN_MODULES:
+            return nodal_graph.load_rule_metadata(self.rules_file)
+        # Fallback
         if not os.path.exists(self.rules_file):
             return {}
         try:
@@ -861,8 +1007,8 @@ class RuleBuilderGUI:
             return
         
         try:
-            # Create figure
-            fig = Figure(figsize=(16, 10))
+            # Create figure - larger size for less cramped appearance
+            fig = Figure(figsize=(18, 12))
             ax = fig.add_subplot(111)
             
             # Draw violation using adapted nodal_graph functions
@@ -883,23 +1029,17 @@ class RuleBuilderGUI:
     
     def draw_violation_on_axes(self, violation, ax):
         """Draw violation graph on matplotlib axes (adapted from nodal_graph.py)."""
-        # Constants from nodal_graph.py
-        SEVERITY_STYLES = {
-            "CRITICAL": {"border": "#7F1D1D", "bg": "#FCF2F2", "text": "#7F1D1D"},
-            "HIGH": {"border": "#B91C1C", "bg": "#FCEDED", "text": "#B91C1C"},
-            "MEDIUM": {"border": "#9A3412", "bg": "#FFF4E8", "text": "#9A3412"},
-            "LOW": {"border": "#7A5E00", "bg": "#FFFBE8", "text": "#7A5E00"},
-        }
-        ARTIFACT_COLORS = {
-            "$MFT": "#4CAF50", "PREFETCH": "#2196F3", "$USN_JOURNAL": "#EF4444",
-            "APPCOMPATCACHE": "#9C27B0", "PCA_LOG": "#FFEB3B",
-            "USERASSIST_REGKEY": "#795548", "AMCACHE": "#00BCD4",
-        }
+        if not HAS_MAIN_MODULES:
+            ax.text(0.5, 0.5, "nodal_graph module not available", ha="center", va="center", fontsize=14)
+            return
+        
+        # Use constants and functions from nodal_graph
+        ARTIFACT_COLORS = nodal_graph.ARTIFACT_COLORS
         
         rule_id = violation.get("rule_id", "UNKNOWN")
         entity = violation.get("entity", "Unknown")
         severity = (violation.get("severity") or "MEDIUM").upper()
-        style = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["MEDIUM"])
+        style = nodal_graph.get_severity_style(severity)
         
         rules_row = self.rules_meta.get(rule_id, {})
         rule_title = rules_row.get("name", "")
@@ -936,34 +1076,36 @@ class RuleBuilderGUI:
         ax.set_facecolor(style["bg"])
         fig = ax.get_figure()
         fig.patch.set_facecolor(style["bg"])
+        # Adjust subplot margins for more breathing room
+        fig.subplots_adjust(left=0.05, right=0.95, top=0.97, bottom=0.10)
         ax.set_aspect('equal', adjustable='box')
         
-        # Header
-        ax.text(0.5, 0.965, f"SEVERITY: {severity}", ha="center", va="center",
+        # Header - increased spacing between elements
+        ax.text(0.5, 0.98, f"SEVERITY: {severity}", ha="center", va="center",
                 fontsize=14, fontweight="bold", color=style["text"],
-                bbox=dict(boxstyle="round,pad=0.28", facecolor="white", edgecolor=style["border"], lw=1.5),
+                bbox=dict(boxstyle="round,pad=0.30", facecolor="white", edgecolor=style["border"], lw=1.5),
                 transform=ax.transAxes)
         
         title_text = rule_id if not rule_title else f"{rule_id}: {rule_title}"
-        ax.text(0.5, 0.91, title_text, ha="center", va="center",
+        ax.text(0.5, 0.92, title_text, ha="center", va="center",
                 fontsize=26, fontweight="bold", color=style["text"],
-                bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor=style["border"], lw=1.2),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=style["border"], lw=1.2),
                 transform=ax.transAxes)
         
-        ax.text(0.5, 0.86, f"File: {file_name}   •   Violations: {len(viols)}",
+        ax.text(0.5, 0.85, f"File: {file_name}   •   Violations: {len(viols)}",
                 ha="center", va="center", fontsize=14, color=style["text"], fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor=style["border"], lw=1.0),
+                bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor=style["border"], lw=1.0),
                 transform=ax.transAxes)
         
         if description:
-            wrapped_desc = "\n".join(wrap(description or "", width=100))
-            ax.text(0.5, 0.815, wrapped_desc, ha="center", va="center", fontsize=12,
+            wrapped_desc = nodal_graph.wrap_text(description, width=100)
+            ax.text(0.5, 0.78, wrapped_desc, ha="center", va="center", fontsize=12,
                     color=style["text"],
-                    bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
+                    bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
                     transform=ax.transAxes)
         
-        # Nodes
-        y_center = 0.55
+        # Nodes - moved down to give more space
+        y_center = 0.50
         circle_r = 0.06
         file_w, file_h = 0.24, 0.15
         xs = [0.18, 0.50, 0.82]
@@ -982,11 +1124,11 @@ class RuleBuilderGUI:
         )
         ax.add_patch(file_node)
         
-        # Callouts
+        # Callouts - increased spacing below nodes
         def callout(x, lines):
-            ax.text(x, y_center - circle_r - 0.03, "\n".join([l for l in lines if l]),
+            ax.text(x, y_center - circle_r - 0.08, "\n".join([l for l in lines if l]),
                     ha="center", va="top", fontsize=12, color="#111",
-                    bbox=dict(boxstyle="round,pad=0.14", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
+                    bbox=dict(boxstyle="round,pad=0.16", facecolor="white", edgecolor=style["border"], lw=0.9, alpha=0.98),
                     transform=ax.transAxes, zorder=3)
         callout(xs[0], [left_art, left_sem, left_ts])
         callout(xs[2], [right_art, right_sem, right_ts])
@@ -1000,17 +1142,18 @@ class RuleBuilderGUI:
         ax.annotate("", xy=(xs[2] - circle_r - pad, y), xytext=(xs[1] + file_w/2 + pad, y),
                     arrowprops=arrow_kw, transform=ax.transAxes)
         
-        # Δt badge
+        # Δt badge - increased spacing above file node
         dt = self.human_delta(left_ts, right_ts)
         if dt:
-            ax.text(xs[1], y_center + file_h/2 + 0.05, f"Δt: {dt}",
+            ax.text(xs[1], y_center + file_h/2 + 0.08, f"Δt: {dt}",
                     ha="center", va="bottom", fontsize=16, fontweight="bold", color=style["text"],
-                    bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor=style["border"], lw=1.2),
+                    bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor=style["border"], lw=1.2),
                     transform=ax.transAxes, zorder=3)
         
         # FILE label
-        file_text_color = "#F3F4F6"  # Simplified
-        outline_effect = [pe.withStroke(linewidth=3.0, foreground='#000000', alpha=0.85)]
+        file_text_color = nodal_graph.best_text_color(file_color)
+        outline = '#000000' if file_text_color != '#111111' else '#FFFFFF'
+        outline_effect = [pe.withStroke(linewidth=3.0, foreground=outline, alpha=0.85)]
         ax.text(xs[1], y_center + 0.01, file_name, ha="center", va="bottom", fontsize=14.5,
                 color=file_text_color, fontweight="bold", transform=ax.transAxes, zorder=4,
                 path_effects=outline_effect)
@@ -1018,23 +1161,26 @@ class RuleBuilderGUI:
                 color=file_text_color, fontweight="bold", transform=ax.transAxes, zorder=4,
                 path_effects=outline_effect)
         
-        # Explanation
+        # Explanation - moved down with more spacing
         if explanation:
-            expl_text = "\n".join(wrap(explanation or "", width=110))
-            ax.text(0.5, 0.28, "Explanation", ha="center", va="bottom", fontsize=12.5,
+            expl_font, expl_text = nodal_graph.auto_font_for_lines(12, explanation, max_width=110, high=12, low=9)
+            ax.text(0.5, 0.22, "Explanation", ha="center", va="bottom", fontsize=12.5,
                     color=style["border"], fontweight="bold", transform=ax.transAxes)
-            ax.text(0.5, 0.27, expl_text, ha="center", va="top", fontsize=11,
+            ax.text(0.5, 0.20, expl_text, ha="center", va="top", fontsize=expl_font,
                     color=style["border"], fontstyle="italic",
-                    bbox=dict(boxstyle="round,pad=0.16", facecolor="white", edgecolor=style["border"], lw=0.8, alpha=0.96),
+                    bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor=style["border"], lw=0.8, alpha=0.96),
                     transform=ax.transAxes, zorder=3)
         
-        # Full path
-        ax.text(0.5, 0.12, f"Full Path: {entity}", ha="center", va="top", fontsize=11,
-                color="#555", bbox=dict(boxstyle="round,pad=0.12", facecolor="white", edgecolor="0.75", lw=0.0, alpha=0.85),
+        # Full path - moved down with more spacing
+        ax.text(0.5, 0.08, f"Full Path: {entity}", ha="center", va="top", fontsize=11,
+                color="#555", bbox=dict(boxstyle="round,pad=0.14", facecolor="white", edgecolor="0.75", lw=0.0, alpha=0.85),
                 transform=ax.transAxes, zorder=3)
     
     def fmt_ts(self, ts_str):
         """Format timestamp."""
+        if HAS_MAIN_MODULES:
+            return nodal_graph.fmt_ts(ts_str)
+        # Fallback
         try:
             return pd.to_datetime(ts_str).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
@@ -1042,6 +1188,9 @@ class RuleBuilderGUI:
     
     def human_delta(self, a, b):
         """Calculate human-readable time delta."""
+        if HAS_MAIN_MODULES:
+            return nodal_graph.human_delta(a, b)
+        # Fallback
         try:
             t1, t2 = pd.to_datetime(a), pd.to_datetime(b)
             d = abs(t2 - t1)
@@ -1054,49 +1203,811 @@ class RuleBuilderGUI:
     
     def parse_artifact_semantic(self, src):
         """Parse artifact semantic information."""
+        if HAS_MAIN_MODULES:
+            return nodal_graph.parse_artifact_semantic(src)
+        # Minimal fallback - should not be reached if HAS_MAIN_MODULES is True
         if not src or "." not in src:
             return src or "", ""
         art, attr = src.split(".", 1)
-        art, attr = art.strip(), attr.strip()
-        
-        MACB_SEMANTICS = {
-            "....": "None", "...b": "Creation", "..c.": "MetaChange", "..cb": "MetaChange+Creation",
-            ".a..": "Accessed", ".a.b": "Accessed+Creation", ".ac.": "Accessed+MetaChange",
-            ".acb": "Accessed+MetaChange+Creation", "m...": "Modified", "m..b": "Modified+Creation",
-            "m.c.": "Modified+MetaChange", "m.cb": "Modified+MetaChange+Creation",
-            "ma..": "Modified+Accessed", "ma.b": "Modified+Accessed+Creation",
-            "mac.": "Modified+Accessed+MetaChange", "macb": "All (MACB)",
-        }
-        
-        if art == "$MFT":
-            macb_map = {
-                "creation": "...b", "metachange": "..c.", "accessed": ".a..", "modified": "m...",
-                "modified_creation": "m..b", "modified_metachange": "m.c.",
-                "modified_accessed_metachange_creation": "macb",
-            }
-            flag = macb_map.get(attr, attr)
-            return art, MACB_SEMANTICS.get(flag, attr)
-        
-        if art == "PREFETCH":
-            if attr == "firstrun":
-                return art, "First Run"
-            if attr == "lastrun":
-                return art, "Last Run"
-            if attr == "creation_time":
-                return art, "Created"
-            return art, attr.replace("_", " ").title()
-        
-        if art == "$USN_JOURNAL":
-            label = "\n".join([r.replace("USN_REASON_", "") for r in attr.split("|")])
-            return art, label
-        
-        return art, attr.replace("_", " ").title()
+        return art.strip(), attr.strip()
     
     def refresh_graph_viewer(self):
         """Refresh the graph viewer."""
         if self.violations_listbox.size() > 0:
             self.violations_listbox.selection_set(0)
             self.violations_listbox.event_generate("<<ListboxSelect>>")
+    
+    # ==================== Data Import Tab Methods ====================
+    
+    def browse_timeline_csv(self):
+        """Browse for timeline CSV file."""
+        filename = filedialog.askopenfilename(
+            title="Select Timeline CSV File",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            self.timeline_csv_var.set(filename)
+    
+    def browse_amcache(self):
+        """Browse for Amcache.hve file."""
+        filename = filedialog.askopenfilename(
+            title="Select Amcache.hve File",
+            filetypes=[("Hive files", "*.hve"), ("All files", "*.*")]
+        )
+        if filename:
+            self.amcache_var.set(filename)
+    
+    def browse_prefetch_folder(self):
+        """Browse for Prefetch folder."""
+        folder = filedialog.askdirectory(title="Select Prefetch Folder")
+        if folder:
+            self.prefetch_folder_var.set(folder)
+    
+    def log_message(self, message):
+        """Append message to import log."""
+        self.import_log.config(state=tk.NORMAL)
+        self.import_log.insert(tk.END, message + "\n")
+        self.import_log.see(tk.END)
+        self.import_log.config(state=tk.DISABLED)
+        self.root.update()
+    
+    def check_source_files(self):
+        """Check if required source files exist."""
+        self.log_message("=" * 50)
+        self.log_message("Checking source files...")
+        
+        timeline_csv = self.timeline_csv_var.get()
+        amcache = self.amcache_var.get()
+        prefetch_folder = self.prefetch_folder_var.get()
+        
+        all_ok = True
+        
+        if not os.path.isfile(timeline_csv):
+            self.log_message(f"[ERROR] Timeline CSV not found: {timeline_csv}")
+            all_ok = False
+        else:
+            self.log_message(f"[OK] Timeline CSV found: {timeline_csv}")
+        
+        if not os.path.isfile(amcache):
+            self.log_message(f"[ERROR] Amcache.hve not found: {amcache}")
+            all_ok = False
+        else:
+            self.log_message(f"[OK] Amcache.hve found: {amcache}")
+        
+        if not os.path.isdir(prefetch_folder):
+            self.log_message(f"[ERROR] Prefetch folder not found: {prefetch_folder}")
+            all_ok = False
+        else:
+            # Check if folder has files
+            try:
+                files = list(os.scandir(prefetch_folder))
+                if not files:
+                    self.log_message(f"[WARNING] Prefetch folder is empty: {prefetch_folder}")
+                else:
+                    self.log_message(f"[OK] Prefetch folder found with {len(files)} items: {prefetch_folder}")
+            except Exception as e:
+                self.log_message(f"[ERROR] Cannot access prefetch folder: {str(e)}")
+                all_ok = False
+        
+        if all_ok:
+            self.log_message("[SUCCESS] All source files are ready!")
+            self.progress_var.set("Files ready")
+        else:
+            self.log_message("[FAILED] Some source files are missing. Please check the paths.")
+            self.progress_var.set("Files missing")
+        
+        return all_ok
+    
+    def process_and_link_entities(self):
+        """Process CSV and link entities in background thread."""
+        if not self.check_source_files():
+            messagebox.showwarning("Warning", "Please fix file paths before processing.")
+            return
+        
+        # Disable button and start progress
+        self.progress_bar.start()
+        self.progress_var.set("Processing...")
+        
+        # Run in background thread
+        thread = threading.Thread(target=self._process_and_link_entities_thread, daemon=True)
+        thread.start()
+    
+    def _process_and_link_entities_thread(self):
+        """Background thread for processing entities."""
+        try:
+            self.log_message("\n" + "=" * 50)
+            self.log_message("Starting entity linking process...")
+            
+            timeline_csv = self.timeline_csv_var.get()
+            amcache = self.amcache_var.get()
+            prefetch_folder = self.prefetch_folder_var.get()
+            
+            # Reset linkedEntities
+            self.linkedEntities = {}
+            
+            # Step 1: Read and process CSV
+            self.log_message("[STEP 1] Reading timeline CSV...")
+            df = pd.read_csv(timeline_csv, low_memory=False)
+            self.log_message(f"[OK] Loaded {len(df)} rows from CSV")
+            
+            # Remove browser noise
+            self.log_message("[STEP 2] Removing browser history entries...")
+            df = df[~df["source"].isin(["WEBHIST"])]
+            self.log_message(f"[OK] Filtered to {len(df)} rows")
+            
+            # Process timestamps
+            self.log_message("[STEP 3] Processing timestamps...")
+            df = self.process_timestamps(df)
+            self.log_message("[OK] Timestamps processed")
+            
+            # Build linked entities (without USN)
+            self.log_message("[STEP 4] Building linked entities...")
+            for idx, row in df.iterrows():
+                if idx % 1000 == 0:
+                    self.log_message(f"  Processing row {idx}/{len(df)}...")
+                self.derive_linked_entities(row)
+            self.log_message("[OK] Linked entities built")
+            
+            # Execute Amcache parser
+            self.log_message("[STEP 5] Processing Amcache...")
+            self.execute_amcache_parser(amcache)
+            
+            # Execute WinPrefetchView
+            self.log_message("[STEP 6] Processing Prefetch files...")
+            self.execute_win_prefetch_view(prefetch_folder)
+            
+            # Build USN lookups
+            self.log_message("[STEP 7] Building USN Journal lookups...")
+            inode_to_key, pf_to_key = self.build_usn_journal_lookups()
+            
+            # Link USN entries
+            self.log_message("[STEP 8] Linking USN Journal entries...")
+            usn_mask = (df["source"].str.lower() == "file") & (df["sourcetype"].str.lower() == "ntfs usn change")
+            usn_df = df[usn_mask]
+            for _, row in usn_df.iterrows():
+                self.link_usn_entry(row, inode_to_key, pf_to_key)
+            self.log_message("[OK] USN Journal entries linked")
+            
+            # Remove PE_COFF
+            self.log_message("[STEP 9] Cleaning up PE_COFF entries...")
+            for file, logTypes in list(self.linkedEntities.items()):
+                if "PE_COFF" in logTypes:
+                    del self.linkedEntities[file]["PE_COFF"]
+            
+            # Build authentication events
+            self.log_message("[STEP 10] Building authentication events...")
+            auth_json_out = os.path.join('source', 'winlogauthentication_events.json')
+            self.build_on_off_structure_from_df(df, auth_json_out)
+            
+            # Save linked entities
+            self.log_message("[STEP 11] Saving linked entities to JSON...")
+            output_path = os.path.join('source', 'linked_entities.json')
+            os.makedirs('source', exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(self.linkedEntities, f, indent=4, ensure_ascii=False, default=str)
+            self.log_message(f"[OK] Saved to: {output_path}")
+            
+            # Update summary
+            self.root.after(0, self._update_import_summary)
+            
+            self.log_message("\n[SUCCESS] Entity linking completed!")
+            self.root.after(0, lambda: self.progress_var.set("Complete"))
+            self.root.after(0, self.progress_bar.stop)
+            self.root.after(0, lambda: messagebox.showinfo("Success", "Entity linking completed successfully!"))
+            
+        except Exception as e:
+            self.log_message(f"\n[ERROR] Processing failed: {str(e)}")
+            import traceback
+            self.log_message(traceback.format_exc())
+            self.root.after(0, lambda: self.progress_var.set("Error"))
+            self.root.after(0, self.progress_bar.stop)
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Processing failed:\n{str(e)}"))
+    
+    def _update_import_summary(self):
+        """Update the summary text with linked entities stats."""
+        total_entities = len(self.linkedEntities)
+        total_sources = sum(len(sources) for sources in self.linkedEntities.values())
+        
+        summary = f"Total Entities: {total_entities}\n"
+        summary += f"Total Source Types: {total_sources}\n\n"
+        
+        # Count by source type
+        source_counts = {}
+        for entity, sources in self.linkedEntities.items():
+            for source_type in sources.keys():
+                source_counts[source_type] = source_counts.get(source_type, 0) + 1
+        
+        summary += "Source Type Distribution:\n"
+        for source_type, count in sorted(source_counts.items()):
+            summary += f"  {source_type}: {count} entities\n"
+        
+        self.summary_text.config(state=tk.NORMAL)
+        self.summary_text.delete("1.0", tk.END)
+        self.summary_text.insert("1.0", summary)
+        self.summary_text.config(state=tk.DISABLED)
+    
+    # ==================== Helper Functions (wrappers around main.py) ====================
+    
+    def process_timestamps(self, df):
+        """Process timestamps and mark invalid ones."""
+        if HAS_MAIN_MODULES:
+            return main_module.processTimestamps(df)
+        # Fallback if main.py not available
+        combined = df["date"].astype(str).str.strip() + " " + df["time"].astype(str).str.strip()
+        df["datetime"] = pd.to_datetime(combined, format="%m/%d/%Y %H:%M:%S", errors="coerce")
+        df["is_valid_time"] = True
+        df.loc[(df["datetime"].isna()) | (df["datetime"].dt.year == 1601), "is_valid_time"] = False
+        return df
+    
+    def normalize_key(self, path):
+        """Normalize file path for keying."""
+        if HAS_MAIN_MODULES:
+            return main_module.normalizeKey(path)
+        # Fallback
+        path = path.strip().lower()
+        path = re.sub(r'^(ntfs:|path:)\s*', '', path)
+        path = re.sub(r'^[a-z]:[\\/]', '', path)
+        path = re.sub(r'^\\+', '', path)
+        path = re.sub(r'^volume\{[0-9a-f\-]+\}[\\/]*', '', path)
+        path = path.replace('\\', '/')
+        path = re.sub(r'\s+was run$', '', path)
+        path = re.sub(r'\s+count:\s*\d+$', '', path)
+        return path.strip()
+    
+    def build_usn_journal_lookups(self):
+        """Build lookup tables for USN Journal linking."""
+        if HAS_MAIN_MODULES:
+            return main_module.buildUSNJournalLookups(self.linkedEntities)
+        # Fallback
+        inode_to_key = {}
+        pf_to_key = {}
+        for key, value in self.linkedEntities.items():
+            for subheader, entries in value.items():
+                if subheader == "PE_COFF":
+                    for entry in entries:
+                        inode = entry.get("inode")
+                        if inode:
+                            inode_to_key[inode] = key
+                elif subheader == "PREFETCH":
+                    for entry in entries:
+                        prefetch_filename = entry.get("prefetch_filename", "").lower()
+                        if prefetch_filename:
+                            pf_to_key.setdefault(prefetch_filename, set()).add(key)
+        return inode_to_key, pf_to_key
+    
+    def link_usn_entry(self, row, inode_to_key, pf_to_key):
+        """Link USN Journal entry to existing linkedEntities."""
+        if HAS_MAIN_MODULES:
+            # main_module.linkUSNEntry uses global linkedEntities, so we temporarily set it
+            original_global = getattr(main_module, 'linkedEntities', {})
+            main_module.linkedEntities = self.linkedEntities
+            try:
+                main_module.linkUSNEntry(row, inode_to_key, pf_to_key)
+            finally:
+                if original_global != self.linkedEntities:
+                    main_module.linkedEntities = original_global
+            return
+        # Fallback implementation would go here if needed
+    
+    def derive_linked_entities(self, row):
+        """Derive linked entities from CSV row."""
+        if HAS_MAIN_MODULES:
+            # main_module.deriveLinkedEntities uses global linkedEntities, so we need to temporarily set it
+            original_global = getattr(main_module, 'linkedEntities', {})
+            main_module.linkedEntities = self.linkedEntities
+            try:
+                main_module.deriveLinkedEntities(row)
+            finally:
+                # Restore original if it was different
+                if original_global != self.linkedEntities:
+                    main_module.linkedEntities = original_global
+            return
+        # Fallback implementation would go here if needed
+    
+    def execute_amcache_parser(self, amcache_path):
+        """Execute AmcacheParser and link results using GUI-selected path."""
+        output_dir = os.path.join('source', 'amcache_output')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        amcacheParser = os.path.join('support-tools', 'AmcacheParser.exe')
+        if not os.path.exists(amcacheParser):
+            self.log_message(f"[ERROR] AmcacheParser.exe not found at: {amcacheParser}")
+            return
+        
+        cmd = [amcacheParser, '-f', amcache_path, '--csv', output_dir]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+            
+            if "Results saved to" in result.stdout or os.path.exists(output_dir):
+                pattern = os.path.join(output_dir, '*_Amcache_UnassociatedFileEntries.csv')
+                csv_files = glob.glob(pattern)
+                if csv_files:
+                    csv_path = csv_files[0]
+                    amcache_df = pd.read_csv(csv_path, low_memory=False)
+                    amcache_df = amcache_df.dropna(subset=["FullPath"])
+                    amcache_df = amcache_df[amcache_df["FullPath"].astype(str).str.strip() != ""]
+                    
+                    count = 0
+                    for _, row in amcache_df.iterrows():
+                        file_path = str(row.get("FullPath", "")).strip().lower()
+                        timestamp = str(row.get("FileKeyLastWriteTimestamp", "")).strip().lower()
+                        
+                        normalized_path = self.normalize_key(file_path)
+                        dt = pd.to_datetime(timestamp, errors="coerce")
+                        if pd.notna(dt):
+                            dt_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                            logType = "AMCACHE"
+                            
+                            self.linkedEntities.setdefault(normalized_path, {})
+                            self.linkedEntities[normalized_path].setdefault(logType, []).append({
+                                "datetime": dt_str,
+                                "original_filename": str(row.get("Name", "")),
+                                "isValidTime": True,
+                            })
+                            count += 1
+                    
+                    self.log_message(f"[OK] Linked {count} Amcache entries")
+                    
+                    # Cleanup
+                    for file in os.listdir(output_dir):
+                        full_path = os.path.join(output_dir, file)
+                        try:
+                            os.remove(full_path)
+                        except:
+                            pass
+                else:
+                    self.log_message("[WARNING] No Amcache CSV files found")
+            else:
+                self.log_message("[WARNING] Amcache Parser may have failed")
+        except subprocess.TimeoutExpired:
+            self.log_message("[ERROR] Amcache Parser timed out")
+        except Exception as e:
+            self.log_message(f"[ERROR] Amcache Parser failed: {str(e)}")
+    
+    def execute_win_prefetch_view(self, prefetch_path):
+        """Execute WinPrefetchView and link results using GUI-selected path."""
+        prefetchCSVSource = os.path.join('source', 'prefetch.csv')
+        winPrefetchView = os.path.join('support-tools', 'WinPrefetchView.exe')
+        
+        if not os.path.exists(winPrefetchView):
+            self.log_message(f"[ERROR] WinPrefetchView.exe not found at: {winPrefetchView}")
+            return
+        
+        cmd = [winPrefetchView, '/folder', prefetch_path, '/scomma', prefetchCSVSource]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+            
+            if os.path.isfile(prefetchCSVSource):
+                df = pd.read_csv(prefetchCSVSource)
+                df = df[df["Process Path"].notna() & (df["Process Path"] != "") & (df["Process Path"] != "nan")]
+                df = df[df["Last Run Time"].notna() & (df["Last Run Time"] != "") & (df["Last Run Time"] != "nan")]
+                df = df[df["Created Time"].notna() & (df["Created Time"] != "") & (df["Created Time"] != "nan")]
+                
+                df["Process Path Normalized"] = df["Process Path"].apply(self.normalize_key)
+                logType = "PREFETCH"
+                
+                count = 0
+                for _, row in df.iterrows():
+                    processPath = row["Process Path Normalized"]
+                    timestamp = row.get("Last Run Time")
+                    splittedTimestamps = timestamp.split(",")
+                    
+                    if processPath not in self.linkedEntities:
+                        self.linkedEntities[processPath] = {}
+                    if logType not in self.linkedEntities[processPath]:
+                        self.linkedEntities[processPath][logType] = []
+                    
+                    for ts in splittedTimestamps:
+                        ts = ts.strip()
+                        try:
+                            cleanTS = datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                            self.linkedEntities[processPath][logType].append({
+                                "datetime": cleanTS,
+                                "creation_time": datetime.strptime(row.get("Created Time").strip(), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
+                                "modified_time": datetime.strptime(row.get("Modified Time"), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
+                                "prefetch_filename": row.get("Filename"),
+                                "executable_filename": row.get("Process EXE"),
+                                "isValidTime": True,
+                                "original_process_path": row.get("Process Path")
+                            })
+                            count += 1
+                        except Exception:
+                            pass
+                
+                self.log_message(f"[OK] Linked {count} Prefetch entries")
+                os.remove(prefetchCSVSource)
+            else:
+                self.log_message("[WARNING] Prefetch CSV not generated")
+        except subprocess.TimeoutExpired:
+            self.log_message("[ERROR] WinPrefetchView timed out")
+        except Exception as e:
+            self.log_message(f"[ERROR] WinPrefetchView failed: {str(e)}")
+    
+    def build_on_off_structure_from_df(self, df, output_json):
+        """Build authentication events structure from dataframe."""
+        if HAS_MAIN_MODULES:
+            main_module.build_on_off_structure_from_df(df, output_json)
+            return
+        # Fallback implementation would go here if needed
+    
+    # ==================== Rule Evaluation Tab Methods ====================
+    
+    def browse_linked_entities_json(self):
+        """Browse for linked entities JSON file."""
+        filename = filedialog.askopenfilename(
+            title="Select Linked Entities JSON File",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if filename:
+            self.linked_entities_json_var.set(filename)
+    
+    def browse_auth_events_json(self):
+        """Browse for auth events JSON file."""
+        filename = filedialog.askopenfilename(
+            title="Select Auth Events JSON File",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if filename:
+            self.auth_events_json_var.set(filename)
+    
+    def load_evaluation_data(self):
+        """Load linked entities and auth events data."""
+        try:
+            # Load linked entities
+            linked_path = self.linked_entities_json_var.get()
+            if not os.path.exists(linked_path):
+                messagebox.showerror("Error", f"File not found: {linked_path}")
+                return
+            
+            # Use main_module.parseLinkedEntities if path matches, otherwise load manually
+            if HAS_MAIN_MODULES and linked_path == os.path.join('source', 'linked_entities.json'):
+                self.linked_entities_data = main_module.parseLinkedEntities()
+            else:
+                # Load from custom path and convert datetime strings
+                with open(linked_path, 'r', encoding='utf-8') as f:
+                    self.linked_entities_data = json.load(f)
+                
+                # Convert datetime strings back to Timestamp objects for processing
+                for key, value in self.linked_entities_data.items():
+                    for src_name, entries in value.items():
+                        for e in entries:
+                            dt = e.get("datetime")
+                            if isinstance(dt, str):
+                                try:
+                                    e["datetime"] = pd.Timestamp(dt)
+                                except:
+                                    e["datetime"] = None
+            
+            # Load auth events
+            auth_path = self.auth_events_json_var.get()
+            if os.path.exists(auth_path):
+                # Use main_module.parseAuthenticationEvents if path matches, otherwise load manually
+                if HAS_MAIN_MODULES and auth_path == os.path.join('source', 'winlogauthentication_events.json'):
+                    self.auth_sessions_data = main_module.parseAuthenticationEvents()
+                else:
+                    # Load from custom path
+                    with open(auth_path, 'r', encoding='utf-8') as f:
+                        auth_data = json.load(f)
+                    
+                    on_events = sorted([e for e in auth_data.get("logon", []) if "timestamp" in e], key=lambda x: x["timestamp"])
+                    off_events = sorted([e for e in auth_data.get("logoff", []) if "timestamp" in e], key=lambda x: x["timestamp"])
+                    
+                    def parse_ts(ts):
+                        ts = ts.strip().replace("T", " ")
+                        try:
+                            return pd.to_datetime(ts, format="%m/%d/%Y %H:%M:%S", errors="coerce")
+                        except:
+                            return pd.to_datetime(ts, errors="coerce")
+                    
+                    on_times = [(parse_ts(e["timestamp"]), e.get("code", "")) for e in on_events]
+                    off_times = [(parse_ts(e["timestamp"]), e.get("code", "")) for e in off_events]
+                    
+                    auth_sessions = []
+                    off_idx = 0
+                    for on_time, on_code in on_times:
+                        while off_idx < len(off_times):
+                            off_time, off_code = off_times[off_idx]
+                            if off_time > on_time:
+                                auth_sessions.append({
+                                    "logon_start": on_time,
+                                    "logoff_end": off_time,
+                                    "on_code": on_code,
+                                    "off_code": off_code,
+                                })
+                                off_idx += 1
+                                break
+                            off_idx += 1
+                    
+                    self.auth_sessions_data = auth_sessions
+            else:
+                self.auth_sessions_data = []
+                print(f"[WARNING] Auth events file not found: {auth_path}")
+            
+            messagebox.showinfo("Success", f"Loaded {len(self.linked_entities_data)} entities and {len(self.auth_sessions_data)} auth sessions")
+            self.eval_progress_var.set("Data loaded")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load data: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+    
+    def run_rule_evaluation(self):
+        """Run rule evaluation in background thread."""
+        if not self.linked_entities_data:
+            messagebox.showwarning("Warning", "Please load data first.")
+            return
+        
+        self.eval_progress_bar.start()
+        self.eval_progress_var.set("Evaluating...")
+        
+        thread = threading.Thread(target=self._run_rule_evaluation_thread, daemon=True)
+        thread.start()
+    
+    def _run_rule_evaluation_thread(self):
+        """Background thread for rule evaluation."""
+        try:
+            # Load rules
+            yamlRules = self.parse_yaml_rules(self.rules_file)
+            if not yamlRules:
+                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load rules"))
+                return
+            
+            # Apply timeframe filters per rule
+            filtered_entities = self.linked_entities_data.copy()
+            # Note: timeframe filtering would be applied per-rule in full implementation
+            
+            # Evaluate rules
+            violations = self.evaluate_rules(yamlRules, filtered_entities, self.auth_sessions_data)
+            
+            # Update UI
+            self.root.after(0, lambda: self._update_evaluation_results(violations))
+            self.root.after(0, self.eval_progress_bar.stop)
+            self.root.after(0, lambda: self.eval_progress_var.set("Complete"))
+            self.root.after(0, lambda: messagebox.showinfo("Success", f"Evaluation complete!\nFound {len([v for v in violations if v.get('violations')])} violations"))
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, self.eval_progress_bar.stop)
+            self.root.after(0, lambda: self.eval_progress_var.set("Error"))
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Evaluation failed:\n{str(e)}"))
+    
+    def _update_evaluation_results(self, violations):
+        """Update the violations summary display."""
+        confirmed = [v for v in violations if v.get("violations")]
+        inconclusive = [v for v in violations if not v.get("violations") and v.get("inconclusive")]
+        
+        summary = f"Evaluation Results:\n"
+        summary += f"=" * 50 + "\n\n"
+        summary += f"Confirmed Violations: {len(confirmed)}\n"
+        summary += f"Inconclusive Results: {len(inconclusive)}\n\n"
+        
+        if confirmed:
+            summary += "Confirmed Violations:\n"
+            summary += "-" * 50 + "\n"
+            for v in confirmed[:20]:  # Show first 20
+                rule_id = v.get("rule_id", "UNKNOWN")
+                entity = v.get("entity", "Unknown")
+                file_name = os.path.basename(entity) or entity
+                summary += f"  [{rule_id}] {file_name}\n"
+            if len(confirmed) > 20:
+                summary += f"  ... and {len(confirmed) - 20} more\n"
+        
+        self.violations_summary.config(state=tk.NORMAL)
+        self.violations_summary.delete("1.0", tk.END)
+        self.violations_summary.insert("1.0", summary)
+        self.violations_summary.config(state=tk.DISABLED)
+        
+        self.evaluation_results = violations
+    
+    def export_violations_json(self):
+        """Export violations to JSON file."""
+        if not self.evaluation_results:
+            messagebox.showwarning("Warning", "No evaluation results to export.")
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            title="Save Violations JSON",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                confirmed = [v for v in self.evaluation_results if v.get("violations")]
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(confirmed, f, indent=2, ensure_ascii=False, default=str)
+                messagebox.showinfo("Success", f"Exported {len(confirmed)} violations to:\n{filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export: {str(e)}")
+    
+    # ==================== Rule Evaluation Helper Functions ====================
+    
+    def parse_yaml_rules(self, yaml_path):
+        """Parse YAML rules file."""
+        if HAS_MAIN_MODULES:
+            return main_module.parseYAMLRules(yaml_path)
+        # Fallback
+        if not os.path.exists(yaml_path):
+            return None
+        with open(yaml_path, 'r', encoding='utf-8') as f:
+            rules = yaml.safe_load(f)
+        return rules.get("rules", [])
+    
+    def get_datetime_from_entity(self, evidence, srcLog):
+        """Get datetime values from linked entity based on source log specification.
+        evidence: dict like {"$MFT": [...], "PREFETCH": [...]}
+        """
+        if HAS_MAIN_MODULES:
+            # main_module.get_datetime expects linkedEntities dict where keys are source types
+            # evidence is already in that format, so we can use it directly
+            try:
+                return main_module.get_datetime(evidence, srcLog)
+            except Exception as e:
+                # Log error but return empty list
+                print(f"[WARNING] get_datetime failed: {e}")
+                return []
+        
+        # Minimal fallback - should not be reached if HAS_MAIN_MODULES is True
+        return []
+    
+    def eval_condition(self, condition, evidence, auth_sessions):
+        """Evaluate a single condition."""
+        if HAS_MAIN_MODULES:
+            # main_module.evalCondition expects (condition, linkedEntities, auth_sessions)
+            # evidence is already in the format that linkedEntities expects (dict with source types as keys)
+            try:
+                return main_module.evalCondition(condition, evidence, auth_sessions)
+            except Exception as e:
+                print(f"[WARNING] evalCondition failed: {e}")
+                return {"violated": False}
+        
+        # Minimal fallback - should not be reached if HAS_MAIN_MODULES is True
+        return {"violated": False}
+    
+    def match_target(self, key, target):
+        """Match entity key against rule target."""
+        if HAS_MAIN_MODULES:
+            return main_module.matchTarget(key, target)
+        # Fallback
+        if not isinstance(key, str) or not isinstance(target, str):
+            return False
+        key = key.lower().strip()
+        target = target.lower().strip()
+        
+        if target.startswith("r/"):
+            pattern = target[2:]
+            return re.fullmatch(pattern, key) is not None
+        elif "*" in target:
+            return fnmatch.fnmatch(key, target)
+        elif target in key:
+            return True
+        else:
+            return key == target
+    
+    def filter_entities_by_range(self, linkedEntities, timeframe):
+        """Filter entities by timeframe."""
+        if HAS_MAIN_MODULES:
+            return main_module.filterEntitiesByRange(linkedEntities, timeframe)
+        # Fallback
+        if not timeframe or not isinstance(timeframe, str) or timeframe.strip() == "":
+            return linkedEntities
+        
+        cmp = {
+            "<": lambda a, b: a < b,
+            "<=": lambda a, b: a <= b,
+            ">": lambda a, b: a > b,
+            ">=": lambda a, b: a >= b,
+            "==": lambda a, b: a == b,
+            "!=": lambda a, b: a != b,
+        }
+        
+        parts = [p.strip() for p in timeframe.split("and") if p.strip()]
+        conditions = []
+        
+        for part in parts:
+            m = re.match(r"(>=|<=|>|<|==|!=)\s*([\d\-:\sT]+)", part.strip())
+            if not m:
+                continue
+            
+            op, val = m.groups()
+            ts = pd.to_datetime(val.strip(), errors="coerce")
+            if pd.isna(ts):
+                continue
+            
+            # Include full day for <= or <
+            if hasattr(ts, 'time') and ts.time() == time(0, 0):
+                if op in ("<", "<="):
+                    ts = ts + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
+            
+            conditions.append((op, ts))
+        
+        if not conditions:
+            return linkedEntities
+        
+        filtered = {}
+        for key, sources in linkedEntities.items():
+            for src_name, entries in sources.items():
+                valid_entries = []
+                for e in entries:
+                    dt = e.get("datetime")
+                    if not dt:
+                        continue
+                    dt = pd.to_datetime(dt, errors="coerce")
+                    if pd.isna(dt):
+                        continue
+                    if all(cmp[op](dt, ts) for op, ts in conditions):
+                        valid_entries.append(e)
+                if valid_entries:
+                    filtered.setdefault(key, {})[src_name] = valid_entries
+        
+        return filtered
+    
+    def evaluate_rules(self, yamlRules, linkedEntities, auth_sessions):
+        """Evaluate rules against linked entities."""
+        if HAS_MAIN_MODULES:
+            # main_module.evaluateRules doesn't handle per-rule timeframe filtering,
+            # so we need to filter before calling it for each rule
+            all_violations = []
+            
+            for rule in yamlRules:
+                timeframe = rule.get("timeframe", None)
+                # Filter entities by timeframe for this rule
+                entities_to_check = self.filter_entities_by_range(linkedEntities, timeframe) if timeframe else linkedEntities
+                
+                # Evaluate this rule against filtered entities
+                # Create a temporary rules list with just this rule
+                single_rule_list = [rule]
+                violations = main_module.evaluateRules(single_rule_list, entities_to_check, auth_sessions)
+                all_violations.extend(violations)
+            
+            # Filter to only return violations (not inconclusive)
+            return [pv for pv in all_violations if pv.get("violations")]
+        
+        # Fallback implementation (should not be reached if HAS_MAIN_MODULES is True)
+        possibleViolations = []
+        for rule in yamlRules:
+            targets = rule.get("targets", list(linkedEntities.keys()))
+            logic = rule.get("logic", {})
+            timeframe = rule.get("timeframe", None)
+            entities_to_check = self.filter_entities_by_range(linkedEntities, timeframe) if timeframe else linkedEntities
+            
+            for target in targets:
+                for key, evidence in entities_to_check.items():
+                    if self.match_target(key, target):
+                        triggeredInfo = []
+                        inconclusiveInfo = []
+                        
+                        if "any_of" in logic:
+                            for condition in logic["any_of"]:
+                                result = self.eval_condition(condition["condition"], evidence, auth_sessions)
+                                if result.get("violated"):
+                                    triggeredInfo.append(result)
+                                elif result.get("inconclusive") and result not in inconclusiveInfo:
+                                    inconclusiveInfo.append(result)
+                        elif "all_of" in logic:
+                            allResults = []
+                            for condition in logic["all_of"]:
+                                result = self.eval_condition(condition["condition"], evidence, auth_sessions)
+                                allResults.append(result)
+                            if all(res.get("violated") for res in allResults):
+                                triggeredInfo.extend(allResults)
+                            for res in allResults:
+                                if res.get("inconclusive") and res not in inconclusiveInfo:
+                                    inconclusiveInfo.append(res)
+                        
+                        if triggeredInfo or inconclusiveInfo:
+                            possibleViolations.append({
+                                "entity": key,
+                                "rule_id": rule.get("id"),
+                                "rule_name": rule.get("name"),
+                                "severity": rule.get("severity"),
+                                "explanation": rule.get("explanation"),
+                                "violations": triggeredInfo if triggeredInfo else None,
+                                "inconclusive": inconclusiveInfo if inconclusiveInfo else None
+                            })
+        
+        return [pv for pv in possibleViolations if pv.get("violations")]
 
 
 class CustomRuleBuilder:
