@@ -11,7 +11,7 @@ import os
 from typing import Dict, List, Any, Optional
 import sv_ttk
 import re
-import datetime
+from datetime import datetime
 import json
 import sys
 import threading
@@ -1582,7 +1582,7 @@ class RuleBuilderGUI:
 
         for fmt in formats:
             try:
-                return datetime.datetime.strptime(ts, fmt).strftime("%Y-%m-%d %H:%M:%S")
+                return datetime.strptime(ts, fmt).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
                 pass
 
