@@ -279,8 +279,16 @@ def executeWinPrefetchView(linkedEntities):
 
             # Add entries iteratively
             for ts in splittedTimestamps:
-                ts = ts.strip()
-                cleanTS = datetime.datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                ts = ts.replace("am", "AM").replace("pm", "PM").strip()
+
+                try:
+                    # Try format: 30-Sep-25 4:12:46 AM
+                    cleanTS = datetime.datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                
+                except:
+                    # Try format: 30/9/2025 4:12:46 AM
+                    cleanTS = datetime.datetime.strptime(ts, "%d/%m/%Y %I:%M:%S %p")
+                    
                 linkedEntities[processPath][logType].append({
                     "datetime": cleanTS,
                     "creation_time": datetime.datetime.strptime(row.get("Created Time").strip(), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
