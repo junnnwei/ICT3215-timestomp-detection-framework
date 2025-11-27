@@ -239,7 +239,7 @@ def normalizeWinPrefetchViewFormat(ts):
     ts = re.sub(r'\b(am|pm)\b', lambda m: m.group().upper(), ts, flags=re.IGNORECASE)
 
     # Convert single-digit months/days by zero-padding
-    ts = re.sub(r'(\b\d\b)', lambda m: m.group().zfill(2), ts)
+    ts = re.sub(r'\b(\d{1})-(\w{3})-(\d{2,4})', r'0\1-\2-\3', ts)
 
     formats = [
         "%d-%b-%y %I:%M:%S %p",

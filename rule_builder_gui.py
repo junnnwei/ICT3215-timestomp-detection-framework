@@ -1569,7 +1569,7 @@ class RuleBuilderGUI:
         ts = re.sub(r'\b(am|pm)\b', lambda m: m.group().upper(), ts, flags=re.IGNORECASE)
 
         # Convert single-digit months/days by zero-padding
-        ts = re.sub(r'(\b\d\b)', lambda m: m.group().zfill(2), ts)
+        ts = re.sub(r'\b(\d{1})-(\w{3})-(\d{2,4})', r'0\1-\2-\3', ts)
 
         formats = [
             "%d-%b-%y %I:%M:%S %p",
@@ -1621,20 +1621,16 @@ class RuleBuilderGUI:
                         self.linkedEntities[processPath][logType] = []
                     
                     for ts in splittedTimestamps:
-                        ts = ts.strip()
-                        try:
-                            cleanTS = self.normalizeWinPrefetchViewFormat(ts)
-                            self.linkedEntities[processPath][logType].append({
-                                "datetime": cleanTS,
-                                "creation_time": self.normalizeWinPrefetchViewFormat(row.get("Created Time")),
-                                "modified_time": self.normalizeWinPrefetchViewFormat(row.get("Modified Time")),
-                                "prefetch_filename": row.get("Filename"),
-                                "executable_filename": row.get("Process EXE"),
-                                "isValidTime": True,
-                                "original_process_path": row.get("Process Path")
-                            })
-                        except Exception:
-                            pass
+                        cleanTS = self.normalizeWinPrefetchViewFormat(ts)
+                        self.linkedEntities[processPath][logType].append({
+                            "datetime": cleanTS,
+                            "creation_time": self.normalizeWinPrefetchViewFormat(row.get("Created Time")),
+                            "modified_time": self.normalizeWinPrefetchViewFormat(row.get("Modified Time")),
+                            "prefetch_filename": row.get("Filename"),
+                            "executable_filename": row.get("Process EXE"),
+                            "isValidTime": True,
+                            "original_process_path": row.get("Process Path")
+                        })
                 
                 self.log_message(f"[OK] Linked {len(df)} Prefetch entries")
                 os.remove(prefetchCSVSource)
