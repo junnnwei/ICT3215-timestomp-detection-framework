@@ -1564,6 +1564,30 @@ class RuleBuilderGUI:
         except Exception as e:
             self.log_message(f"[ERROR] Amcache Parser failed: {str(e)}")
     
+    def normalizeWinPrefetchViewFormat(self, ts):
+        # Normalize AM/PM
+        ts = re.sub(r'\b(am|pm)\b', lambda m: m.group().upper(), ts, flags=re.IGNORECASE)
+
+        # Convert single-digit months/days by zero-padding
+        ts = re.sub(r'(\b\d\b)', lambda m: m.group().zfill(2), ts)
+
+        formats = [
+            "%d-%b-%y %I:%M:%S %p",
+            "%d-%b-%Y %I:%M:%S %p",
+            "%d/%m/%Y %I:%M:%S %p",
+            "%d/%m/%y %I:%M:%S %p",
+            "%m/%d/%Y %I:%M:%S %p",
+            "%Y-%m-%d %H:%M:%S",
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(ts, fmt).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+
+        raise ValueError(f"Unrecognized timestamp format: {ts}")
+
     def execute_win_prefetch_view(self, prefetch_path):
         """Execute WinPrefetchView and link results using GUI-selected path."""
         prefetchCSVSource = os.path.join('source', 'prefetch.csv')
@@ -1586,11 +1610,10 @@ class RuleBuilderGUI:
                 df["Process Path Normalized"] = df["Process Path"].apply(self.normalize_key)
                 logType = "PREFETCH"
                 
-                count = 0
                 for _, row in df.iterrows():
                     processPath = row["Process Path Normalized"]
                     timestamp = row.get("Last Run Time")
-                    splittedTimestamps = timestamp.split(",")
+                    splittedTimestamps = timestamp.split(", ")
                     
                     if processPath not in self.linkedEntities:
                         self.linkedEntities[processPath] = {}
@@ -1600,21 +1623,20 @@ class RuleBuilderGUI:
                     for ts in splittedTimestamps:
                         ts = ts.strip()
                         try:
-                            cleanTS = datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                            cleanTS = self.normalizeWinPrefetchViewFormat(ts)
                             self.linkedEntities[processPath][logType].append({
                                 "datetime": cleanTS,
-                                "creation_time": datetime.strptime(row.get("Created Time").strip(), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
-                                "modified_time": datetime.strptime(row.get("Modified Time"), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
+                                "creation_time": self.normalizeWinPrefetchViewFormat(row.get("Created Time")),
+                                "modified_time": self.normalizeWinPrefetchViewFormat(row.get("Modified Time")),
                                 "prefetch_filename": row.get("Filename"),
                                 "executable_filename": row.get("Process EXE"),
                                 "isValidTime": True,
                                 "original_process_path": row.get("Process Path")
                             })
-                            count += 1
                         except Exception:
                             pass
                 
-                self.log_message(f"[OK] Linked {count} Prefetch entries")
+                self.log_message(f"[OK] Linked {len(df)} Prefetch entries")
                 os.remove(prefetchCSVSource)
             else:
                 self.log_message("[WARNING] Prefetch CSV not generated")
