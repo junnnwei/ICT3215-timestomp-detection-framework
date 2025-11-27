@@ -233,13 +233,38 @@ def executeAmcacheParser(linkedEntities):
     else:
         print("[WARNING] Amcache Parser failed. Continuing without Amcache records.")
 
+# Function: WinPrefetchView takes local regional format
+def normalizeWinPrefetchViewFormat(ts):
+    # Normalize AM/PM
+    ts = re.sub(r'\b(am|pm)\b', lambda m: m.group().upper(), ts, flags=re.IGNORECASE)
+
+    # Convert single-digit months/days by zero-padding
+    ts = re.sub(r'(\b\d\b)', lambda m: m.group().zfill(2), ts)
+
+    formats = [
+        "%d-%b-%y %I:%M:%S %p",
+        "%d-%b-%Y %I:%M:%S %p",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%Y-%m-%d %H:%M:%S",
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.datetime.strptime(ts, fmt)
+        except ValueError:
+            pass
+
+    raise ValueError(f"Unrecognized timestamp format: {ts}")
+
 # Function: Execution of WinPrefetchView to accurately link prefetch files
 def executeWinPrefetchView(linkedEntities):
     logType = "PREFETCH"
     print("[+] WinPrefetchView Processing")
     prefetch_path = os.path.join('source', 'prefetch')
     prefetchCSVSource = os.path.join('source/prefetch.csv')
-
+    
     # Tool path
     winPrefetchView = os.path.join('support-tools', 'WinPrefetchView.exe')
 
@@ -269,7 +294,7 @@ def executeWinPrefetchView(linkedEntities):
         for _, row in df.iterrows():
             processPath = row["Process Path Normalized"]
             timestamp = row.get("Last Run Time")
-            splittedTimestamps = timestamp.split(",")
+            splittedTimestamps = timestamp.split(", ")
 
             if processPath not in linkedEntities:
                 linkedEntities[processPath] = {}
@@ -279,26 +304,19 @@ def executeWinPrefetchView(linkedEntities):
 
             # Add entries iteratively
             for ts in splittedTimestamps:
-                ts = ts.replace("am", "AM").replace("pm", "PM").strip()
-
-                try:
-                    # Try format: 30-Sep-25 4:12:46 AM
-                    cleanTS = datetime.datetime.strptime(ts, "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S")
+                cleanTS = normalizeWinPrefetchViewFormat(ts)
                 
-                except:
-                    # Try format: 30/9/2025 4:12:46 AM
-                    cleanTS = datetime.datetime.strptime(ts, "%d/%m/%Y %I:%M:%S %p")
-                    
                 linkedEntities[processPath][logType].append({
                     "datetime": cleanTS,
-                    "creation_time": datetime.datetime.strptime(row.get("Created Time").strip(), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
-                    "modified_time": datetime.datetime.strptime(row.get("Modified Time"), "%d-%b-%y %I:%M:%S %p").strftime("%Y-%m-%d %H:%M:%S"),
+                    "creation_time": normalizeWinPrefetchViewFormat(row.get("Created Time")),
+                    "modified_time": normalizeWinPrefetchViewFormat(row.get("Modified Time")),
                     "prefetch_filename": row.get("Filename"),
                     "executable_filename": row.get("Process EXE"),
                     "isValidTime": True,
                     "original_process_path": row.get("Process Path")
                 })
-    
+
+        print(f"[+] Linked {len(df)} Prefetch entries into linkedEntities (timestamps normalized).")
         os.remove(prefetchCSVSource)
 
 # Function: Form linked entities (excl. $UsnJournal)
@@ -1185,6 +1203,7 @@ if __name__ == "__main__":
             if checkSourceFiles():
                 # executeWinPrefetchView(linkedEntities)
                 # test = input("ASDsadas: ")
+                
                 print("[PARSING] Parsing timeline.")
                 df = pd.read_csv('source/timeline.csv', low_memory=False)
                 # print(df.columns)
