@@ -252,7 +252,7 @@ def normalizeWinPrefetchViewFormat(ts):
 
     for fmt in formats:
         try:
-            return datetime.datetime.strptime(ts, fmt)
+            return datetime.datetime.strptime(ts, fmt).strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             pass
 
