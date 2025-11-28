@@ -62,8 +62,13 @@ class RuleBuilderGUI:
         self.root.minsize(800, 600)  # Set minimum window size
         
         self.rules_file = "timestomp_rules.yaml"
+        self.rules_dir = "rules"  # Directory for individual rule files
+        # Ensure rules directory exists
+        os.makedirs(self.rules_dir, exist_ok=True)
+        
         self.rules_data = self.load_rules()
         self.selected_rule_index = None
+        self.rule_file_mapping = {}  # Maps rule_id to filename
         
         self.create_widgets()
         self.refresh_rule_list()
@@ -82,7 +87,7 @@ class RuleBuilderGUI:
             return {"rules": []}
     
     def save_rules(self):
-        """Save rules to YAML file."""
+        """Save rules to YAML file (legacy method for backward compatibility)."""
         try:
             with open(self.rules_file, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(self.rules_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -90,6 +95,31 @@ class RuleBuilderGUI:
             return True
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save rules: {str(e)}")
+            return False
+    
+    def save_rule_to_file(self, rule: Dict[str, Any], filename: str) -> bool:
+        """Save a single rule to its own YAML file."""
+        try:
+            # Ensure filename ends with .yaml or .yml
+            if not filename.endswith(('.yaml', '.yml')):
+                filename += '.yaml'
+            
+            filepath = os.path.join(self.rules_dir, filename)
+            
+            # Create rule data structure with single rule
+            rule_data = {"rules": [rule]}
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(rule_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            
+            # Update mapping
+            rule_id = rule.get("id")
+            if rule_id:
+                self.rule_file_mapping[rule_id] = filename
+            
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save rule to file: {str(e)}")
             return False
     
     def create_widgets(self):
@@ -196,10 +226,53 @@ class RuleBuilderGUI:
         ttk.Entry(controls_frame, textvariable=self.auth_events_json_var, width=50).grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
         ttk.Button(controls_frame, text="Browse", command=self.browse_auth_events_json).grid(row=1, column=2, padx=5, pady=5)
         
-        # Rule selection
-        ttk.Label(controls_frame, text="Evaluate Rules:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        # Rule selection section
+        rule_selection_frame = ttk.LabelFrame(controls_frame, text="Rule Selection", padding="5")
+        rule_selection_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        # Checkbox for "All Rules"
         self.eval_all_rules_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(controls_frame, text="All Rules", variable=self.eval_all_rules_var).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Checkbutton(rule_selection_frame, text="Apply All Rules", variable=self.eval_all_rules_var,
+                        command=self.toggle_rule_selection).pack(side=tk.LEFT, padx=5)
+        
+        # Frame for rule checkboxes with scrollbar
+        rule_list_frame = ttk.Frame(rule_selection_frame)
+        rule_list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        ttk.Label(rule_list_frame, text="Select Rules:").pack(anchor=tk.W)
+        
+        # Canvas and scrollbar for scrollable checkbox frame
+        rule_canvas = tk.Canvas(rule_list_frame, height=100)
+        rule_scrollbar = ttk.Scrollbar(rule_list_frame, orient=tk.VERTICAL, command=rule_canvas.yview)
+        self.rule_checkboxes_frame = ttk.Frame(rule_canvas)
+        
+        self.rule_checkboxes_frame.bind(
+            "<Configure>",
+            lambda e: rule_canvas.configure(scrollregion=rule_canvas.bbox("all"))
+        )
+        
+        rule_canvas_window = rule_canvas.create_window((0, 0), window=self.rule_checkboxes_frame, anchor="nw")
+        rule_canvas.configure(yscrollcommand=rule_scrollbar.set)
+        
+        # Make the inner frame width match the canvas width
+        def configure_canvas_width(event):
+            canvas_width = event.width
+            rule_canvas.itemconfig(rule_canvas_window, width=canvas_width)
+        
+        rule_canvas.bind('<Configure>', configure_canvas_width)
+        
+        rule_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        rule_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Store available rule files and checkbox variables
+        self.available_rule_files = []
+        self.rule_checkbox_vars = {}  # Maps filename to BooleanVar
+        
+        # Refresh button for rule list
+        refresh_button = ttk.Button(rule_selection_frame, text="Refresh List", command=self.load_available_rules)
+        refresh_button.pack(side=tk.LEFT, padx=5)
+        
+        self.load_available_rules()
         
         controls_frame.columnconfigure(1, weight=1)
         
@@ -250,18 +323,41 @@ class RuleBuilderGUI:
         
         ttk.Label(left_panel, text="Existing Rules", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
         
-        # Scrollable listbox for rules
+        # Scrollable listbox for rules with dynamic width
         list_frame = ttk.Frame(left_panel)
         list_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.rule_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, width=30, height=20)
-        self.rule_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Use a canvas to make the listbox resizable and show full names
+        listbox_canvas = tk.Canvas(list_frame, highlightthickness=0)
+        listbox_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Create listbox with dynamic width
+        self.rule_listbox = tk.Listbox(listbox_canvas, yscrollcommand=scrollbar.set, 
+                                       width=40, height=20, font=("Arial", 9))
         scrollbar.config(command=self.rule_listbox.yview)
         
+        # Create window in canvas for listbox
+        listbox_window = listbox_canvas.create_window((0, 0), window=self.rule_listbox, anchor="nw")
+        
+        def configure_listbox_width(event):
+            # Make listbox fill canvas width
+            canvas_width = event.width
+            listbox_canvas.itemconfig(listbox_window, width=canvas_width)
+        
+        listbox_canvas.bind('<Configure>', configure_listbox_width)
+        
+        # Update scroll region when listbox size changes
+        def update_scroll_region(event):
+            listbox_canvas.configure(scrollregion=listbox_canvas.bbox("all"))
+        
+        self.rule_listbox.bind('<Configure>', update_scroll_region)
         self.rule_listbox.bind('<<ListboxSelect>>', self.on_rule_select)
+        
+        # Add tooltip support for long rule names
+        self.rule_listbox.bind('<Motion>', self.on_rule_listbox_hover)
         
         left_panel.columnconfigure(0, weight=1)
         left_panel.rowconfigure(1, weight=1)
@@ -302,9 +398,14 @@ class RuleBuilderGUI:
         timeframe_frame = ttk.LabelFrame(right_panel, text="Timeframe (optional)", padding="5")
         timeframe_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 10), padx=5)
 
+        # Checkbox to enable/disable timeframe inclusion
+        self.use_timeframe_var = tk.BooleanVar(value=False)
+        use_timeframe_cb = ttk.Checkbutton(timeframe_frame, text="Include timeframe in rule", variable=self.use_timeframe_var)
+        use_timeframe_cb.grid(row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 8))
+
         # Date entries
-        ttk.Label(timeframe_frame, text="Start Date:").grid(row=0, column=0, sticky=tk.W, pady=3)
-        ttk.Label(timeframe_frame, text="End Date:").grid(row=0, column=2, sticky=tk.W, pady=3)
+        ttk.Label(timeframe_frame, text="Start Date:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Label(timeframe_frame, text="End Date:").grid(row=1, column=2, sticky=tk.W, pady=3)
 
         if HAS_TKCALENDAR:
             self.start_date_var = tk.StringVar()
@@ -314,8 +415,8 @@ class RuleBuilderGUI:
         else:
             self.start_date_entry = ttk.Entry(timeframe_frame, width=14)
             self.end_date_entry = ttk.Entry(timeframe_frame, width=14)
-        self.start_date_entry.grid(row=0, column=1, sticky=tk.W, padx=(5, 5))
-        self.end_date_entry.grid(row=0, column=3, sticky=tk.W)
+        self.start_date_entry.grid(row=1, column=1, sticky=tk.W, padx=(5, 5))
+        self.end_date_entry.grid(row=1, column=3, sticky=tk.W)
 
         # Date picker buttons (work even when DateEntry not available)
         def open_calendar(target: str):
@@ -348,15 +449,15 @@ class RuleBuilderGUI:
         #ttk.Button(timeframe_frame, text="Pick", width=5, command=lambda: open_calendar('end')).grid(row=0, column=3, sticky=tk.E, padx=(156,0))
 
         # Time entries
-        ttk.Label(timeframe_frame, text="Start Time (HH:MM:SS):").grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Label(timeframe_frame, text="Start Time (HH:MM:SS):").grid(row=2, column=0, sticky=tk.W, pady=3)
         self.start_time_entry = ttk.Entry(timeframe_frame, width=14)
         self.start_time_entry.insert(0, "00:00:00")
-        self.start_time_entry.grid(row=1, column=1, sticky=tk.W, padx=(5, 15))
+        self.start_time_entry.grid(row=2, column=1, sticky=tk.W, padx=(5, 15))
 
-        ttk.Label(timeframe_frame, text="End Time (HH:MM:SS):").grid(row=1, column=2, sticky=tk.W, pady=3)
+        ttk.Label(timeframe_frame, text="End Time (HH:MM:SS):").grid(row=2, column=2, sticky=tk.W, pady=3)
         self.end_time_entry = ttk.Entry(timeframe_frame, width=14)
         self.end_time_entry.insert(0, "23:59:59")
-        self.end_time_entry.grid(row=1, column=3, sticky=tk.W)
+        self.end_time_entry.grid(row=2, column=3, sticky=tk.W)
 
         # Only date checkbox
         self.only_date_var = tk.BooleanVar(value=False)
@@ -372,7 +473,7 @@ class RuleBuilderGUI:
                 self.start_time_entry.config(state="normal")
                 self.end_time_entry.config(state="normal")
         only_date_cb = ttk.Checkbutton(timeframe_frame, text="Only specify date (auto-time)", variable=self.only_date_var, command=on_only_date_toggle)
-        only_date_cb.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+        only_date_cb.grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
         
         # Logic type
         ttk.Label(right_panel, text="Logic Type:").grid(row=6, column=0, sticky=tk.W, pady=5)
@@ -390,9 +491,20 @@ class RuleBuilderGUI:
         conditions_label_frame.grid(row=7, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), 
                                    pady=10, padx=5)
         
+        # Add/Remove condition buttons - place at top before scrollable area
+        condition_buttons_frame = ttk.Frame(conditions_label_frame)
+        condition_buttons_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(condition_buttons_frame, text="Add Condition", 
+                  command=self.add_condition).pack(side=tk.LEFT, padx=5)
+        ttk.Button(condition_buttons_frame, text="Custom Rule Builder", 
+                  command=self.open_custom_rule_builder).pack(side=tk.LEFT, padx=5)
+        ttk.Button(condition_buttons_frame, text="Remove Last", 
+                  command=self.remove_last_condition).pack(side=tk.LEFT, padx=5)
+        
         # Create a container frame for the scrollable area
         conditions_container = ttk.Frame(conditions_label_frame)
-        conditions_container.pack(fill=tk.BOTH, expand=True, before=None)
+        conditions_container.pack(fill=tk.BOTH, expand=True)
         
         # Scrollable frame for conditions - increased initial height and made resizable
         conditions_canvas = tk.Canvas(conditions_container, height=250)
@@ -419,18 +531,6 @@ class RuleBuilderGUI:
         conditions_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.condition_entries = []
-        
-        # Add/Remove condition buttons
-        condition_buttons_frame = ttk.Frame(conditions_label_frame)
-        # Keep buttons visible even when the scrollable area shrinks
-        condition_buttons_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
-        
-        ttk.Button(condition_buttons_frame, text="Add Condition", 
-                  command=self.add_condition).pack(side=tk.LEFT, padx=5)
-        ttk.Button(condition_buttons_frame, text="Custom Rule Builder", 
-                  command=self.open_custom_rule_builder).pack(side=tk.LEFT, padx=5)
-        ttk.Button(condition_buttons_frame, text="Remove Last", 
-                  command=self.remove_last_condition).pack(side=tk.LEFT, padx=5)
         
         # Action buttons
         buttons_frame = ttk.Frame(right_panel)
@@ -483,7 +583,49 @@ class RuleBuilderGUI:
         for rule in rules:
             rule_id = rule.get("id", "Unknown")
             rule_name = rule.get("name", "Unnamed")
-            self.rule_listbox.insert(tk.END, f"{rule_id}: {rule_name}")
+            # Store full text for tooltip
+            full_text = f"{rule_id}: {rule_name}"
+            # Truncate display if too long, but store full text
+            display_text = full_text if len(full_text) <= 60 else full_text[:57] + "..."
+            self.rule_listbox.insert(tk.END, display_text)
+            # Store full text as item data (we'll use index to retrieve)
+            index = self.rule_listbox.size() - 1
+            self.rule_listbox.itemconfig(index, {'bg': 'white'})
+    
+    def on_rule_listbox_hover(self, event):
+        """Show tooltip for long rule names on hover."""
+        # Get item under cursor
+        index = self.rule_listbox.nearest(event.y)
+        if 0 <= index < self.rule_listbox.size():
+            # Get full rule name from rules data
+            rules = self.rules_data.get("rules", [])
+            if index < len(rules):
+                rule = rules[index]
+                rule_id = rule.get("id", "Unknown")
+                rule_name = rule.get("name", "Unnamed")
+                full_text = f"{rule_id}: {rule_name}"
+                
+                # Show tooltip if text is truncated
+                if len(full_text) > 60:
+                    # Create or update tooltip
+                    if not hasattr(self, '_tooltip') or not self._tooltip.winfo_exists():
+                        self._tooltip = tk.Toplevel()
+                        self._tooltip.wm_overrideredirect(True)
+                        self._tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+                        label = tk.Label(self._tooltip, text=full_text, background="#ffffe0", 
+                                       relief=tk.SOLID, borderwidth=1, font=("Arial", 9), 
+                                       justify=tk.LEFT, wraplength=300)
+                        label.pack()
+                    else:
+                        # Update existing tooltip
+                        self._tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+                        for widget in self._tooltip.winfo_children():
+                            widget.config(text=full_text)
+                else:
+                    # Hide tooltip if not needed
+                    if hasattr(self, '_tooltip') and self._tooltip.winfo_exists():
+                        self._tooltip.destroy()
+                        delattr(self, '_tooltip')
     
     def on_rule_select(self, event):
         """Handle rule selection from listbox."""
@@ -538,7 +680,13 @@ class RuleBuilderGUI:
         self.end_time_entry.insert(0, "23:59:59")
 
         timeframe_str = rule.get("timeframe")
-        if isinstance(timeframe_str, str):
+        # Set checkbox based on whether rule has timeframe
+        if timeframe_str and isinstance(timeframe_str, str) and timeframe_str.strip():
+            self.use_timeframe_var.set(True)
+        else:
+            self.use_timeframe_var.set(False)
+        
+        if isinstance(timeframe_str, str) and timeframe_str.strip():
             both_re = re.compile(r"^\s*>=\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s+([0-9]{2}:[0-9]{2}:[0-9]{2}))?\s+and\s+<=\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s+([0-9]{2}:[0-9]{2}:[0-9]{2}))?\s*$")
             ge_re = re.compile(r"^\s*>=\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s+([0-9]{2}:[0-9]{2}:[0-9]{2}))?\s*$")
             le_re = re.compile(r"^\s*<=\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s+([0-9]{2}:[0-9]{2}:[0-9]{2}))?\s*$")
@@ -653,80 +801,81 @@ class RuleBuilderGUI:
         if targets_list:
             rule["targets"] = targets_list
 
-        # Timeframe: optional
-        def get_date_str(entry_widget) -> str:
-            if HAS_TKCALENDAR:
-                # DateEntry has get() returning str
+        # Timeframe: optional - only add if checkbox is checked
+        if self.use_timeframe_var.get():
+            def get_date_str(entry_widget) -> str:
+                if HAS_TKCALENDAR:
+                    # DateEntry has get() returning str
+                    return entry_widget.get().strip()
                 return entry_widget.get().strip()
-            return entry_widget.get().strip()
 
-        start_date = get_date_str(self.start_date_entry)
-        end_date = get_date_str(self.end_date_entry)
-        start_time = self.start_time_entry.get().strip() or "00:00:00"
-        end_time = self.end_time_entry.get().strip() or "23:59:59"
+            start_date = get_date_str(self.start_date_entry)
+            end_date = get_date_str(self.end_date_entry)
+            start_time = self.start_time_entry.get().strip() or "00:00:00"
+            end_time = self.end_time_entry.get().strip() or "23:59:59"
 
-        # If only date checkbox is checked, coerce times
-        if self.only_date_var.get():
-            start_time = "00:00:00"
-            end_time = "23:59:59"
+            # If only date checkbox is checked, coerce times
+            if self.only_date_var.get():
+                start_time = "00:00:00"
+                end_time = "23:59:59"
 
-        # Validate formats if any date is provided
-        date_provided = bool(start_date or end_date)
-        if date_provided:
-            date_fmt = "%Y-%m-%d"
-            time_fmt = "%H:%M:%S"
-            def valid_date(s: str) -> bool:
-                try:
-                    datetime.strptime(s, date_fmt)
-                    return True
-                except Exception:
-                    return False
-            def valid_time(s: str) -> bool:
-                try:
-                    datetime.strptime(s, time_fmt)
-                    return True
-                except Exception:
-                    return False
-            if start_date and not valid_date(start_date):
-                messagebox.showerror("Validation Error", "Start Date must be in YYYY-MM-DD format.")
-                return None
-            if end_date and not valid_date(end_date):
-                messagebox.showerror("Validation Error", "End Date must be in YYYY-MM-DD format.")
-                return None
-            # Time validation only if time entries enabled or provided
-            if start_date and not self.only_date_var.get() and start_time and not valid_time(start_time):
-                messagebox.showerror("Validation Error", "Start Time must be in HH:MM:SS format.")
-                return None
-            if end_date and not self.only_date_var.get() and end_time and not valid_time(end_time):
-                messagebox.showerror("Validation Error", "End Time must be in HH:MM:SS format.")
-                return None
-            # Ordering validation when both dates present
-            if start_date and end_date:
-                start_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M:%S")
-                end_dt = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M:%S")
-                if end_dt < start_dt:
-                    messagebox.showerror("Validation Error", "End date/time cannot be earlier than start date/time.")
+            # Validate formats if any date is provided
+            date_provided = bool(start_date or end_date)
+            if date_provided:
+                date_fmt = "%Y-%m-%d"
+                time_fmt = "%H:%M:%S"
+                def valid_date(s: str) -> bool:
+                    try:
+                        datetime.strptime(s, date_fmt)
+                        return True
+                    except Exception:
+                        return False
+                def valid_time(s: str) -> bool:
+                    try:
+                        datetime.strptime(s, time_fmt)
+                        return True
+                    except Exception:
+                        return False
+                if start_date and not valid_date(start_date):
+                    messagebox.showerror("Validation Error", "Start Date must be in YYYY-MM-DD format.")
                     return None
+                if end_date and not valid_date(end_date):
+                    messagebox.showerror("Validation Error", "End Date must be in YYYY-MM-DD format.")
+                    return None
+                # Time validation only if time entries enabled or provided
+                if start_date and not self.only_date_var.get() and start_time and not valid_time(start_time):
+                    messagebox.showerror("Validation Error", "Start Time must be in HH:MM:SS format.")
+                    return None
+                if end_date and not self.only_date_var.get() and end_time and not valid_time(end_time):
+                    messagebox.showerror("Validation Error", "End Time must be in HH:MM:SS format.")
+                    return None
+                # Ordering validation when both dates present
+                if start_date and end_date:
+                    start_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M:%S")
+                    end_dt = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M:%S")
+                    if end_dt < start_dt:
+                        messagebox.showerror("Validation Error", "End date/time cannot be earlier than start date/time.")
+                        return None
 
-            # Build timeframe string
-            tf_parts: List[str] = []
-            if start_date:
-                if self.only_date_var.get():
-                    tf_parts.append(f">= {start_date}")
+                # Build timeframe string
+                tf_parts: List[str] = []
+                if start_date:
+                    if self.only_date_var.get():
+                        tf_parts.append(f">= {start_date}")
+                    else:
+                        tf_parts.append(f">= {start_date} {start_time}")
+                if end_date:
+                    if self.only_date_var.get():
+                        clause = f"<= {end_date}"
+                    else:
+                        clause = f"<= {end_date} {end_time}"
+                    if tf_parts:
+                        rule["timeframe"] = f"{tf_parts[0]} and {clause}"
+                    else:
+                        rule["timeframe"] = clause
                 else:
-                    tf_parts.append(f">= {start_date} {start_time}")
-            if end_date:
-                if self.only_date_var.get():
-                    clause = f"<= {end_date}"
-                else:
-                    clause = f"<= {end_date} {end_time}"
-                if tf_parts:
-                    rule["timeframe"] = f"{tf_parts[0]} and {clause}"
-                else:
-                    rule["timeframe"] = clause
-            else:
-                if tf_parts:
-                    rule["timeframe"] = tf_parts[0]
+                    if tf_parts:
+                        rule["timeframe"] = tf_parts[0]
         
         return rule
     
@@ -746,7 +895,65 @@ class RuleBuilderGUI:
                                     f"Rule ID '{rule_id}' already exists!")
                 return
         
-        # Update existing rule or add new one
+        # Determine filename for the rule
+        filename = None
+        if self.selected_rule_index is not None:
+            # Updating existing rule - use existing filename if available
+            existing_rule = rules[self.selected_rule_index]
+            existing_id = existing_rule.get("id")
+            if existing_id in self.rule_file_mapping:
+                filename = self.rule_file_mapping[existing_id]
+            else:
+                # Generate filename from rule ID
+                filename = f"{rule_id}.yaml"
+        else:
+            # New rule - ask user for filename
+            rule_name = rule.get("name", "unnamed_rule")
+            default_filename = f"{rule_id}.yaml"
+            
+            # Create a dialog to get filename
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Save Rule")
+            dialog.geometry("400x150")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            ttk.Label(dialog, text="Enter filename for this rule:").pack(pady=10)
+            
+            filename_var = tk.StringVar(value=default_filename)
+            filename_entry = ttk.Entry(dialog, textvariable=filename_var, width=40)
+            filename_entry.pack(pady=5)
+            filename_entry.select_range(0, tk.END)
+            filename_entry.focus()
+            
+            result = {"filename": None}
+            
+            def on_ok():
+                result["filename"] = filename_var.get().strip()
+                if not result["filename"]:
+                    messagebox.showerror("Error", "Filename cannot be empty!")
+                    return
+                dialog.destroy()
+            
+            def on_cancel():
+                dialog.destroy()
+            
+            button_frame = ttk.Frame(dialog)
+            button_frame.pack(pady=10)
+            ttk.Button(button_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
+            
+            dialog.wait_window()
+            filename = result["filename"]
+            
+            if not filename:
+                return  # User cancelled
+        
+        # Save rule to individual file
+        if not self.save_rule_to_file(rule, filename):
+            return
+        
+        # Update existing rule or add new one to local data
         if self.selected_rule_index is not None:
             # Update existing rule
             rules[self.selected_rule_index] = rule
@@ -757,7 +964,7 @@ class RuleBuilderGUI:
         
         self.rules_data["rules"] = rules
         
-        # Save to file
+        # Also save to main file for backward compatibility
         if self.save_rules():
             self.refresh_rule_list()
             # Update listbox selection
@@ -765,6 +972,8 @@ class RuleBuilderGUI:
             if self.selected_rule_index is not None:
                 self.rule_listbox.selection_set(self.selected_rule_index)
                 self.rule_listbox.see(self.selected_rule_index)
+            
+            messagebox.showinfo("Success", f"Rule saved to {os.path.join(self.rules_dir, filename)}")
     
     def delete_rule(self):
         """Delete the currently selected rule."""
@@ -778,9 +987,35 @@ class RuleBuilderGUI:
         
         rule = rules[self.selected_rule_index]
         rule_name = rule.get("name", "Unknown")
+        rule_id = rule.get("id", "")
         
         if messagebox.askyesno("Confirm Delete", 
                               f"Are you sure you want to delete rule '{rule_name}'?"):
+            # Delete the YAML file from rules folder if it exists
+            if rule_id in self.rule_file_mapping:
+                filename = self.rule_file_mapping[rule_id]
+                filepath = os.path.join(self.rules_dir, filename)
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        print(f"[+] Deleted rule file: {filepath}")
+                    except Exception as e:
+                        messagebox.showwarning("Warning", 
+                                              f"Rule deleted from list, but failed to delete file:\n{filepath}\n{str(e)}")
+                # Remove from mapping
+                del self.rule_file_mapping[rule_id]
+            else:
+                # Try to find and delete by rule ID if not in mapping
+                possible_filename = f"{rule_id}.yaml"
+                filepath = os.path.join(self.rules_dir, possible_filename)
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        print(f"[+] Deleted rule file: {filepath}")
+                    except Exception as e:
+                        messagebox.showwarning("Warning", 
+                                              f"Rule deleted from list, but failed to delete file:\n{filepath}\n{str(e)}")
+            
             rules.pop(self.selected_rule_index)
             self.rules_data["rules"] = rules
             
@@ -788,6 +1023,7 @@ class RuleBuilderGUI:
                 self.selected_rule_index = None
                 self.clear_form()
                 self.refresh_rule_list()
+                messagebox.showinfo("Success", f"Rule '{rule_name}' deleted successfully.")
     
     def clear_form(self):
         """Clear all form fields."""
@@ -808,6 +1044,7 @@ class RuleBuilderGUI:
         self.start_time_entry.config(state="normal")
         self.end_time_entry.config(state="normal")
         self.only_date_var.set(False)
+        self.use_timeframe_var.set(False)
         self.start_time_entry.delete(0, tk.END)
         self.end_time_entry.delete(0, tk.END)
         self.start_time_entry.insert(0, "00:00:00")
@@ -1377,16 +1614,76 @@ class RuleBuilderGUI:
             
             # Build authentication events
             self.log_message("[STEP 10] Building authentication events...")
-            auth_json_out = os.path.join('source', 'winlogauthentication_events.json')
-            self.build_on_off_structure_from_df(df, auth_json_out)
+            
+            # Ask user for save location for authentication events using file dialog
+            default_auth_path = os.path.join('source', 'winlogauthentication_events.json')
+            auth_json_out = filedialog.asksaveasfilename(
+                title="Save Authentication Events JSON",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                initialfile="winlogauthentication_events.json",
+                initialdir=os.path.dirname(os.path.abspath(default_auth_path)) if os.path.exists(default_auth_path) else os.getcwd()
+            )
+            
+            if not auth_json_out:
+                # User cancelled, use default
+                auth_json_out = default_auth_path
+                self.log_message("[INFO] Auth events save cancelled, using default location")
+            
+            # Ensure directory exists
+            auth_output_dir = os.path.dirname(auth_json_out)
+            if auth_output_dir and not os.path.exists(auth_output_dir):
+                os.makedirs(auth_output_dir, exist_ok=True)
+                self.log_message(f"[OK] Created directory: {auth_output_dir}")
+            
+            try:
+                self.build_on_off_structure_from_df(df, auth_json_out)
+                self.log_message(f"[OK] Authentication events saved to: {auth_json_out}")
+            except Exception as e:
+                error_msg = f"Error saving auth events file: {str(e)}"
+                self.log_message(f"[ERROR] {error_msg}")
+                # Try default location as fallback
+                try:
+                    os.makedirs('source', exist_ok=True)
+                    self.build_on_off_structure_from_df(df, default_auth_path)
+                    self.log_message(f"[OK] Saved to default location: {default_auth_path}")
+                    messagebox.showwarning("Warning", f"Failed to save to selected location.\nSaved to default: {default_auth_path}")
+                except Exception as e2:
+                    messagebox.showerror("Error", f"Failed to save authentication events:\n{str(e2)}")
             
             # Save linked entities
             self.log_message("[STEP 11] Saving linked entities to JSON...")
-            output_path = os.path.join('source', 'linked_entities.json')
-            os.makedirs('source', exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(self.linkedEntities, f, indent=4, ensure_ascii=False, default=str)
-            self.log_message(f"[OK] Saved to: {output_path}")
+            
+            # Ask user for save location using file dialog
+            default_path = os.path.join('source', 'linked_entities.json')
+            output_path = filedialog.asksaveasfilename(
+                title="Save Linked Entities JSON",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                initialfile="linked_entities.json",
+                initialdir=os.path.dirname(os.path.abspath(default_path)) if os.path.exists(default_path) else os.getcwd()
+            )
+            
+            if not output_path:
+                # User cancelled, use default
+                output_path = default_path
+                self.log_message("[INFO] Save cancelled, using default location")
+            
+            # Ensure directory exists
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+                self.log_message(f"[OK] Created directory: {output_dir}")
+            
+            try:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.linkedEntities, f, indent=4, ensure_ascii=False, default=str)
+                self.log_message(f"[OK] Saved to: {output_path}")
+                messagebox.showinfo("Success", f"Linked entities saved to:\n{output_path}")
+            except Exception as e:
+                error_msg = f"Error saving file: {str(e)}"
+                self.log_message(f"[ERROR] {error_msg}")
+                messagebox.showerror("Error", error_msg)
             
             # Update summary
             self.root.after(0, self._update_import_summary)
@@ -1651,6 +1948,94 @@ class RuleBuilderGUI:
     
     # ==================== Rule Evaluation Tab Methods ====================
     
+    def load_available_rules(self):
+        """Load available rule files from rules directory and legacy file."""
+        self.available_rule_files = []
+        
+        # Check rules directory
+        rules_dir = "rules"
+        if os.path.exists(rules_dir):
+            for filename in os.listdir(rules_dir):
+                if filename.endswith(('.yaml', '.yml')):
+                    filepath = os.path.join(rules_dir, filename)
+                    self.available_rule_files.append(filepath)
+        
+        # Check legacy file
+        legacy_file = "timestomp_rules.yaml"
+        if os.path.exists(legacy_file):
+            self.available_rule_files.insert(0, legacy_file)
+        
+        # Clear existing checkboxes
+        if hasattr(self, 'rule_checkboxes_frame'):
+            for widget in self.rule_checkboxes_frame.winfo_children():
+                widget.destroy()
+        
+        self.rule_checkbox_vars = {}
+        
+        # Create checkboxes for each rule file
+        for rule_file in self.available_rule_files:
+            filename = os.path.basename(rule_file)
+            
+            # Create BooleanVar for this checkbox
+            var = tk.BooleanVar(value=self.eval_all_rules_var.get() if hasattr(self, 'eval_all_rules_var') else True)
+            self.rule_checkbox_vars[rule_file] = var
+            
+            # Create checkbox
+            checkbox = ttk.Checkbutton(
+                self.rule_checkboxes_frame,
+                text=filename,
+                variable=var,
+                width=50  # Allow longer text
+            )
+            checkbox.pack(anchor=tk.W, padx=5, pady=2)
+            
+            # Add tooltip for full filename if it's long
+            if len(filename) > 45:
+                self.create_tooltip(checkbox, rule_file)
+    
+    def toggle_rule_selection(self):
+        """Enable/disable rule selection based on 'All Rules' checkbox."""
+        if self.eval_all_rules_var.get():
+            # Select all rules
+            for var in self.rule_checkbox_vars.values():
+                var.set(True)
+        # Note: We don't deselect when unchecked - user can manually deselect
+    
+    def get_selected_rule_files(self):
+        """Get list of selected rule files."""
+        if not hasattr(self, 'available_rule_files'):
+            return []
+        
+        if self.eval_all_rules_var.get():
+            return self.available_rule_files
+        
+        # Get selected files based on checkbox states
+        selected_files = []
+        for rule_file, var in self.rule_checkbox_vars.items():
+            if var.get():
+                selected_files.append(rule_file)
+        
+        return selected_files
+    
+    def create_tooltip(self, widget, text):
+        """Create a tooltip for a widget."""
+        def on_enter(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            label = tk.Label(tooltip, text=text, background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                           font=("Arial", 9), justify=tk.LEFT)
+            label.pack()
+            widget.tooltip = tooltip
+        
+        def on_leave(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+                del widget.tooltip
+        
+        widget.bind('<Enter>', on_enter)
+        widget.bind('<Leave>', on_leave)
+    
     def browse_linked_entities_json(self):
         """Browse for linked entities JSON file."""
         filename = filedialog.askopenfilename(
@@ -1765,10 +2150,26 @@ class RuleBuilderGUI:
     def _run_rule_evaluation_thread(self):
         """Background thread for rule evaluation."""
         try:
-            # Load rules
-            yamlRules = self.parse_yaml_rules(self.rules_file)
+            # Get selected rule files
+            selected_rule_files = self.get_selected_rule_files()
+            
+            if not selected_rule_files:
+                self.root.after(0, lambda: messagebox.showerror("Error", "No rules selected. Please select at least one rule file."))
+                self.root.after(0, self.eval_progress_bar.stop)
+                self.root.after(0, lambda: self.eval_progress_var.set("Error"))
+                return
+            
+            # Load rules from selected files
+            if HAS_MAIN_MODULES:
+                yamlRules = main_module.parseYAMLRules(selected_rule_files)
+            else:
+                # Fallback: load from first file
+                yamlRules = self.parse_yaml_rules(selected_rule_files[0] if selected_rule_files else self.rules_file)
+            
             if not yamlRules:
-                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load rules"))
+                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load rules from selected files"))
+                self.root.after(0, self.eval_progress_bar.stop)
+                self.root.after(0, lambda: self.eval_progress_var.set("Error"))
                 return
             
             # Apply timeframe filters per rule
@@ -2169,8 +2570,6 @@ class CustomRuleBuilder:
         buttons_frame = ttk.Frame(self.main_frame)
         buttons_frame.grid(row=row, column=0, columnspan=2, pady=15)
         
-        ttk.Button(buttons_frame, text="Test Condition", 
-                  command=self.test_condition).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Insert Condition", 
                   command=self.insert_condition).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Cancel", 
@@ -2397,14 +2796,6 @@ class CustomRuleBuilder:
                 return False
         
         return True
-    
-    def test_condition(self):
-        """Show a popup with the current condition string."""
-        condition_str = self.build_condition_string()
-        if condition_str:
-            messagebox.showinfo("Condition Test", f"Condition String:\n\n{condition_str}")
-        else:
-            messagebox.showwarning("Condition Test", "Please complete the condition first.")
     
     def insert_condition(self):
         """Insert the condition into the main GUI."""

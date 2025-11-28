@@ -1,19 +1,4 @@
 rules:
-- id: TS_008
-  name: UserAssist Execution Before Creation/Metachange
-  description: UserAssist registry evidence shows execution before file exists (MFT
-    creation and/or metachange).
-  severity: HIGH
-  targets:
-  - '*'
-  logic:
-    any_of:
-    - condition: datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.creation)
-    - condition: datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.metachange)
-  explanation: 'UserAssist entries are updated when programs are actually launched
-    via Windows Explorer or Start Menu.
-
-    '
 - id: TS006
   name: Modified+Metachange Before Creation
   severity: High

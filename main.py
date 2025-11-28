@@ -575,14 +575,49 @@ def parseAuthenticationEvents():
 
 # Function: Parse YAML Rules
 def parseYAMLRules(yaml_path):
-    if not os.path.exists(yaml_path):
-        print(f"YAML rules file not found: {yaml_path}")
+    """Parse YAML rules from a single file or a list of files."""
+    all_rules = []
+    
+    # Handle both single file path and list of file paths
+    if isinstance(yaml_path, str):
+        yaml_paths = [yaml_path]
+    elif isinstance(yaml_path, list):
+        yaml_paths = yaml_path
+    else:
+        print(f"Invalid yaml_path type: {type(yaml_path)}")
         return None
+    
+    for path in yaml_paths:
+        if not os.path.exists(path):
+            print(f"YAML rules file not found: {path}")
+            continue
 
-    with open(yaml_path, 'r', encoding='utf-8') as f:
-        rules = yaml.safe_load(f)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                rules_data = yaml.safe_load(f)
+                if rules_data and "rules" in rules_data:
+                    all_rules.extend(rules_data["rules"])
+                elif isinstance(rules_data, list):
+                    # Handle case where file directly contains a list of rules
+                    all_rules.extend(rules_data)
+        except Exception as e:
+            print(f"Error parsing {path}: {str(e)}")
+            continue
+    
+    return all_rules if all_rules else None
 
-    return rules.get("rules", [])
+# Function: Get all rule files from rules directory
+def get_rule_files(rules_dir="rules"):
+    """Get all YAML rule files from the rules directory."""
+    if not os.path.exists(rules_dir):
+        return []
+    
+    rule_files = []
+    for filename in os.listdir(rules_dir):
+        if filename.endswith(('.yaml', '.yml')):
+            rule_files.append(os.path.join(rules_dir, filename))
+    
+    return sorted(rule_files)
 
 def get_datetime(linkedEntities, srcLog):
     # MACB attributes are file system timestamps that record a file's Modified, Accessed, Changed (metadata), and Birth (creation) times.
@@ -1256,18 +1291,63 @@ if __name__ == "__main__":
 
                 # For the sake of checking: output to file
                 print("[WRITING] Writing linked entities to JSON file.")
-                output_path = os.path.join('source', 'linked_entities.json')
+                
+                # Ask user for save location
+                default_path = os.path.join('source', 'linked_entities.json')
+                print(f"\nDefault save location: {default_path}")
+                user_path = input(f"Enter save path (press Enter for default, or provide full path): ").strip()
+                
+                if user_path:
+                    output_path = user_path
+                else:
+                    output_path = default_path
+                
+                # Ensure directory exists
+                output_dir = os.path.dirname(output_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                    print(f"[+] Created directory: {output_dir}")
 
                 # Convert to JSON and write to file
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
-                
-                print(f"[+] Linked entities saved to: {output_path}")
+                try:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
+                    print(f"[+] Linked entities saved to: {output_path}")
+                except Exception as e:
+                    print(f"[-] Error saving file: {str(e)}")
+                    print(f"[!] Attempting to save to default location: {default_path}")
+                    os.makedirs('source', exist_ok=True)
+                    with open(default_path, 'w', encoding='utf-8') as f:
+                        json.dump(linkedEntities, f, indent=4, ensure_ascii=False)
+                    print(f"[+] Linked entities saved to: {default_path}")
 
                 print(f"[+] Deriving Windows events.")
 
-                auth_json_out = os.path.join('source', 'winlogauthentication_events.json')
-                build_on_off_structure_from_df(df, auth_json_out)
+                # Ask user for save location for authentication events
+                default_auth_path = os.path.join('source', 'winlogauthentication_events.json')
+                print(f"\nDefault save location for auth events: {default_auth_path}")
+                user_auth_path = input(f"Enter save path for authentication events (press Enter for default, or provide full path): ").strip()
+                
+                if user_auth_path:
+                    auth_json_out = user_auth_path
+                else:
+                    auth_json_out = default_auth_path
+                
+                # Ensure directory exists
+                auth_output_dir = os.path.dirname(auth_json_out)
+                if auth_output_dir and not os.path.exists(auth_output_dir):
+                    os.makedirs(auth_output_dir, exist_ok=True)
+                    print(f"[+] Created directory: {auth_output_dir}")
+                
+                try:
+                    build_on_off_structure_from_df(df, auth_json_out)
+                    print(f"[+] Authentication events saved to: {auth_json_out}")
+                except Exception as e:
+                    print(f"[-] Error saving auth events file: {str(e)}")
+                    print(f"[!] Attempting to save to default location: {default_auth_path}")
+                    os.makedirs('source', exist_ok=True)
+                    build_on_off_structure_from_df(df, default_auth_path)
+                    print(f"[+] Authentication events saved to: {default_auth_path}")
                 
                 # WuHao write your function/code here for deriving Windows events
 
@@ -1282,15 +1362,69 @@ if __name__ == "__main__":
             linkedEntitiesUnfiltered = parseLinkedEntities()
             print("[+] Linked entities parsed successfully.")
 
-            # Parse YAML rules for detection
-            print("[+] Parsing YAML Rules.")
-            yamlRules = parseYAMLRules('timestomp_rules.yaml')
-
-            if yamlRules is None:
-                print("[-] Failed to parse YAML rules. Please check the file.")
+            # Get all available rule files
+            rule_files = get_rule_files()
+            legacy_file = 'timestomp_rules.yaml'
+            
+            # Include legacy file if it exists
+            if os.path.exists(legacy_file):
+                rule_files.insert(0, legacy_file)
+            
+            if not rule_files:
+                print("[-] No rule files found. Please create rules using the Rule Builder (Option 2).")
                 continue
             
-            print(f"[YAML PARSER] {len(yamlRules)} rules parsed successfully.")
+            # Display available rules and let user select
+            print("\n[RULE SELECTION] Available rule files:")
+            print("=" * 60)
+            for i, rule_file in enumerate(rule_files, 1):
+                print(f"  {i}. {os.path.basename(rule_file)}")
+            print("  0. Apply all rules")
+            print("=" * 60)
+            
+            while True:
+                try:
+                    choice = input("\nEnter rule number(s) to apply (comma-separated, or 0 for all): ").strip()
+                    
+                    if choice == '0':
+                        # Apply all rules
+                        selected_files = rule_files
+                        break
+                    else:
+                        # Parse comma-separated numbers
+                        indices = [int(x.strip()) for x in choice.split(',')]
+                        selected_files = []
+                        for idx in indices:
+                            if 1 <= idx <= len(rule_files):
+                                selected_files.append(rule_files[idx - 1])
+                            else:
+                                print(f"[-] Invalid selection: {idx}")
+                                raise ValueError()
+                        
+                        if selected_files:
+                            break
+                        else:
+                            print("[-] No valid rules selected. Please try again.")
+                except (ValueError, IndexError):
+                    print("[-] Invalid input. Please enter numbers separated by commas, or 0 for all.")
+                    continue
+            
+            # Parse selected YAML rules
+            print(f"\n[+] Parsing YAML Rules from {len(selected_files)} file(s).")
+            yamlRules = parseYAMLRules(selected_files)
+
+            if yamlRules is None or len(yamlRules) == 0:
+                print("[-] Failed to parse YAML rules or no rules found. Please check the files.")
+                continue
+            
+            print(f"[YAML PARSER] {len(yamlRules)} rule(s) parsed successfully.")
+            
+            # Display selected rules
+            print("\n[SELECTED RULES]")
+            for rule in yamlRules:
+                rule_id = rule.get("id", "Unknown")
+                rule_name = rule.get("name", "Unnamed")
+                print(f"  - {rule_id}: {rule_name}")
 
             # Retrieve specified timeframe
             for rule in yamlRules:
@@ -1299,7 +1433,7 @@ if __name__ == "__main__":
             linkedEntities = filterEntitiesByRange(linkedEntitiesUnfiltered, timeframe)
             
             # Parse power on/off events
-            print("[+] Parsing power on/off events.")
+            print("\n[+] Parsing power on/off events.")
             auth_sessions = parseAuthenticationEvents()
             # print(auth_sessions)
 
