@@ -1342,9 +1342,10 @@ class RuleBuilderGUI:
             
             # Build linked entities (without USN)
             self.log_message("[STEP 4] Building linked entities...")
-            for idx, row in df.iterrows():
-                if idx % 1000 == 0:
-                    self.log_message(f"  Processing row {idx}/{len(df)}...")
+            total = len(df)
+            for idx, (_, row) in enumerate(df.iterrows()):
+                if idx % 1000 == 0 or idx == total - 1:
+                    self.log_message(f"  Processing row {idx}/{total}...")
                 self.derive_linked_entities(row)
             self.log_message("[OK] Linked entities built")
             
