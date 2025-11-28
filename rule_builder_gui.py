@@ -230,18 +230,13 @@ class RuleBuilderGUI:
         rule_selection_frame = ttk.LabelFrame(controls_frame, text="Rule Selection", padding="5")
         rule_selection_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
         
-        # Checkbox for "All Rules"
-        self.eval_all_rules_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(rule_selection_frame, text="Apply All Rules", variable=self.eval_all_rules_var,
-                        command=self.toggle_rule_selection).pack(side=tk.LEFT, padx=5)
-        
-        # Frame for rule checkboxes with scrollbar
+        # Frame for rule radio buttons with scrollbar
         rule_list_frame = ttk.Frame(rule_selection_frame)
         rule_list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
         
-        ttk.Label(rule_list_frame, text="Select Rules:").pack(anchor=tk.W)
+        ttk.Label(rule_list_frame, text="Select Rule:").pack(anchor=tk.W)
         
-        # Canvas and scrollbar for scrollable checkbox frame
+        # Canvas and scrollbar for scrollable radio button frame
         rule_canvas = tk.Canvas(rule_list_frame, height=100)
         rule_scrollbar = ttk.Scrollbar(rule_list_frame, orient=tk.VERTICAL, command=rule_canvas.yview)
         self.rule_checkboxes_frame = ttk.Frame(rule_canvas)
@@ -264,9 +259,9 @@ class RuleBuilderGUI:
         rule_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         rule_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Store available rule files and checkbox variables
+        # Store available rule files and radio button variable
         self.available_rule_files = []
-        self.rule_checkbox_vars = {}  # Maps filename to BooleanVar
+        self.rule_radio_var = tk.StringVar()  # Single variable for radio button selection
         
         # Refresh button for rule list
         refresh_button = ttk.Button(rule_selection_frame, text="Refresh List", command=self.load_available_rules)
@@ -1965,57 +1960,44 @@ class RuleBuilderGUI:
         if os.path.exists(legacy_file):
             self.available_rule_files.insert(0, legacy_file)
         
-        # Clear existing checkboxes
+        # Clear existing radio buttons
         if hasattr(self, 'rule_checkboxes_frame'):
             for widget in self.rule_checkboxes_frame.winfo_children():
                 widget.destroy()
         
-        self.rule_checkbox_vars = {}
+        # Initialize radio button variable if not exists
+        if not hasattr(self, 'rule_radio_var'):
+            self.rule_radio_var = tk.StringVar()
         
-        # Create checkboxes for each rule file
+        # Create radio buttons for each rule file
         for rule_file in self.available_rule_files:
             filename = os.path.basename(rule_file)
             
-            # Create BooleanVar for this checkbox
-            var = tk.BooleanVar(value=self.eval_all_rules_var.get() if hasattr(self, 'eval_all_rules_var') else True)
-            self.rule_checkbox_vars[rule_file] = var
-            
-            # Create checkbox
-            checkbox = ttk.Checkbutton(
+            # Create radio button
+            radio = ttk.Radiobutton(
                 self.rule_checkboxes_frame,
                 text=filename,
-                variable=var,
+                variable=self.rule_radio_var,
+                value=rule_file,
                 width=50  # Allow longer text
             )
-            checkbox.pack(anchor=tk.W, padx=5, pady=2)
+            radio.pack(anchor=tk.W, padx=5, pady=2)
             
             # Add tooltip for full filename if it's long
             if len(filename) > 45:
-                self.create_tooltip(checkbox, rule_file)
-    
-    def toggle_rule_selection(self):
-        """Enable/disable rule selection based on 'All Rules' checkbox."""
-        if self.eval_all_rules_var.get():
-            # Select all rules
-            for var in self.rule_checkbox_vars.values():
-                var.set(True)
-        # Note: We don't deselect when unchecked - user can manually deselect
+                self.create_tooltip(radio, rule_file)
     
     def get_selected_rule_files(self):
-        """Get list of selected rule files."""
+        """Get list of selected rule files (single rule only)."""
         if not hasattr(self, 'available_rule_files'):
             return []
         
-        if self.eval_all_rules_var.get():
-            return self.available_rule_files
+        # Get selected file from radio button
+        selected_file = self.rule_radio_var.get()
+        if selected_file and selected_file in self.available_rule_files:
+            return [selected_file]
         
-        # Get selected files based on checkbox states
-        selected_files = []
-        for rule_file, var in self.rule_checkbox_vars.items():
-            if var.get():
-                selected_files.append(rule_file)
-        
-        return selected_files
+        return []
     
     def create_tooltip(self, widget, text):
         """Create a tooltip for a widget."""
@@ -2154,7 +2136,7 @@ class RuleBuilderGUI:
             selected_rule_files = self.get_selected_rule_files()
             
             if not selected_rule_files:
-                self.root.after(0, lambda: messagebox.showerror("Error", "No rules selected. Please select at least one rule file."))
+                self.root.after(0, lambda: messagebox.showerror("Error", "No rule selected. Please select one rule file."))
                 self.root.after(0, self.eval_progress_bar.stop)
                 self.root.after(0, lambda: self.eval_progress_var.set("Error"))
                 return
