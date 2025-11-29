@@ -74,28 +74,37 @@ class RuleBuilderGUI:
         self.refresh_rule_list()
     
     def load_rules(self) -> Dict[str, Any]:
-        """Load rules from YAML file."""
-        if not os.path.exists(self.rules_file):
-            return {"rules": []}
+        """Load rules from rules folder (individual YAML files)."""
+        all_rules = []
         
-        try:
-            with open(self.rules_file, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f)
-                return data if data else {"rules": []}
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load rules: {str(e)}")
-            return {"rules": []}
+        # Load all rules from the rules directory
+        if os.path.exists(self.rules_dir):
+            for filename in os.listdir(self.rules_dir):
+                if filename.endswith(('.yaml', '.yml')):
+                    filepath = os.path.join(self.rules_dir, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = yaml.safe_load(f)
+                            if data and isinstance(data, dict):
+                                rules = data.get("rules", [])
+                                if isinstance(rules, list):
+                                    all_rules.extend(rules)
+                                    # Update mapping for each rule
+                                    for rule in rules:
+                                        rule_id = rule.get("id")
+                                        if rule_id:
+                                            self.rule_file_mapping[rule_id] = filename
+                    except Exception as e:
+                        print(f"Warning: Failed to load rule from {filename}: {str(e)}")
+                        continue
+        
+        return {"rules": all_rules}
     
     def save_rules(self):
-        """Save rules to YAML file (legacy method for backward compatibility)."""
-        try:
-            with open(self.rules_file, 'w', encoding='utf-8') as f:
-                yaml.safe_dump(self.rules_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-            messagebox.showinfo("Success", "Rules saved successfully!")
-            return True
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save rules: {str(e)}")
-            return False
+        """Save rules to YAML file (legacy method for backward compatibility - no longer used)."""
+        # This method is kept for backward compatibility but is no longer called
+        # Rules are now saved individually to the rules folder
+        return True
     
     def save_rule_to_file(self, rule: Dict[str, Any], filename: str) -> bool:
         """Save a single rule to its own YAML file."""
@@ -959,16 +968,15 @@ class RuleBuilderGUI:
         
         self.rules_data["rules"] = rules
         
-        # Also save to main file for backward compatibility
-        if self.save_rules():
-            self.refresh_rule_list()
-            # Update listbox selection
-            self.rule_listbox.selection_clear(0, tk.END)
-            if self.selected_rule_index is not None:
-                self.rule_listbox.selection_set(self.selected_rule_index)
-                self.rule_listbox.see(self.selected_rule_index)
-            
-            messagebox.showinfo("Success", f"Rule saved to {os.path.join(self.rules_dir, filename)}")
+        # Refresh the rule list (no need to save to timestomp_rules.yaml anymore)
+        self.refresh_rule_list()
+        # Update listbox selection
+        self.rule_listbox.selection_clear(0, tk.END)
+        if self.selected_rule_index is not None:
+            self.rule_listbox.selection_set(self.selected_rule_index)
+            self.rule_listbox.see(self.selected_rule_index)
+        
+        messagebox.showinfo("Success", f"Rule saved to {os.path.join(self.rules_dir, filename)}")
     
     def delete_rule(self):
         """Delete the currently selected rule."""
@@ -1014,11 +1022,11 @@ class RuleBuilderGUI:
             rules.pop(self.selected_rule_index)
             self.rules_data["rules"] = rules
             
-            if self.save_rules():
-                self.selected_rule_index = None
-                self.clear_form()
-                self.refresh_rule_list()
-                messagebox.showinfo("Success", f"Rule '{rule_name}' deleted successfully.")
+            # No need to save to timestomp_rules.yaml anymore
+            self.selected_rule_index = None
+            self.clear_form()
+            self.refresh_rule_list()
+            messagebox.showinfo("Success", f"Rule '{rule_name}' deleted successfully.")
     
     def clear_form(self):
         """Clear all form fields."""
@@ -1191,29 +1199,33 @@ class RuleBuilderGUI:
         messagebox.showinfo("Success", f"Loaded {len(actual)} violations")
     
     def load_rule_metadata_for_graphs(self):
-        """Load rule metadata from YAML for graph generation."""
-        if HAS_MAIN_MODULES:
-            return nodal_graph.load_rule_metadata(self.rules_file)
-        # Fallback
-        if not os.path.exists(self.rules_file):
-            return {}
-        try:
-            with open(self.rules_file, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            meta = {}
-            for r in data.get("rules", []):
-                rid = r.get("id")
-                if not rid:
-                    continue
-                meta[rid] = {
-                    "name": r.get("name", ""),
-                    "description": r.get("description", ""),
-                    "explanation": r.get("explanation", ""),
-                    "severity": (r.get("severity") or "MEDIUM").upper(),
-                }
-            return meta
-        except Exception:
-            return {}
+        """Load rule metadata from rules folder for graph generation."""
+        meta = {}
+        
+        # Load all rules from the rules directory
+        if os.path.exists(self.rules_dir):
+            for filename in os.listdir(self.rules_dir):
+                if filename.endswith(('.yaml', '.yml')):
+                    filepath = os.path.join(self.rules_dir, filename)
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            data = yaml.safe_load(f) or {}
+                        for r in data.get("rules", []):
+                            rid = r.get("id")
+                            if not rid:
+                                continue
+                            meta[rid] = {
+                                "name": r.get("name", ""),
+                                "description": r.get("description", ""),
+                                "explanation": r.get("explanation", ""),
+                                "severity": (r.get("severity") or "MEDIUM").upper(),
+                            }
+                    except Exception:
+                        continue
+        
+        # If HAS_MAIN_MODULES, also try to use nodal_graph (but it expects a single file)
+        # For now, we'll use our aggregated metadata
+        return meta
     
     def on_violation_select(self, event):
         """Handle violation selection and display graph."""
@@ -1944,7 +1956,7 @@ class RuleBuilderGUI:
     # ==================== Rule Evaluation Tab Methods ====================
     
     def load_available_rules(self):
-        """Load available rule files from rules directory and legacy file."""
+        """Load available rule files from rules directory."""
         self.available_rule_files = []
         
         # Check rules directory
@@ -1954,11 +1966,6 @@ class RuleBuilderGUI:
                 if filename.endswith(('.yaml', '.yml')):
                     filepath = os.path.join(rules_dir, filename)
                     self.available_rule_files.append(filepath)
-        
-        # Check legacy file
-        legacy_file = "timestomp_rules.yaml"
-        if os.path.exists(legacy_file):
-            self.available_rule_files.insert(0, legacy_file)
         
         # Clear existing radio buttons
         if hasattr(self, 'rule_checkboxes_frame'):
@@ -2145,8 +2152,12 @@ class RuleBuilderGUI:
             if HAS_MAIN_MODULES:
                 yamlRules = main_module.parseYAMLRules(selected_rule_files)
             else:
-                # Fallback: load from first file
-                yamlRules = self.parse_yaml_rules(selected_rule_files[0] if selected_rule_files else self.rules_file)
+                # Fallback: load from first file (should always have selected_rule_files)
+                if selected_rule_files:
+                    yamlRules = self.parse_yaml_rules(selected_rule_files[0])
+                else:
+                    # If no file selected, try to load from rules directory
+                    yamlRules = None
             
             if not yamlRules:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load rules from selected files"))

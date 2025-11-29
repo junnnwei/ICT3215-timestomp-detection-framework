@@ -1127,14 +1127,14 @@ def evaluateRules(yamlRules, linkedEntities, auth_sessions):
     if confirmedViolations:
         print(confirmedViolations)
         # For nodal graph, output to json
-        output_file = 'violations_output.json'
+        #output_file = 'violations_output.json'
     
         try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(confirmedViolations, f, indent=2, ensure_ascii=False)
+            # with open(output_file, 'w', encoding='utf-8') as f:
+            #    json.dump(confirmedViolations, f, indent=2, ensure_ascii=False)
             
-            print(f"\n[+] Violations exported to: {output_file}")
-            print(f"[+] Total violation records: {len(confirmedViolations)}")
+            #print(f"\n[+] Violations exported to: {output_file}")
+            #print(f"[+] Total violation records: {len(confirmedViolations)}")
             
             # Count actual violations vs inconclusive
             actual_violations = [v for v in confirmedViolations if v.get('violations')]
