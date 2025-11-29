@@ -2473,6 +2473,34 @@ class CustomRuleBuilder:
         y = (self.modal.winfo_screenheight() // 2) - (self.modal.winfo_height() // 2)
         self.modal.geometry(f"+{x}+{y}")
     
+    def update_finetune_state(self, side="left"):
+        """Enable/disable fine-tuned parameter box based on selected source."""
+        allowed = ["$MFT", "PREFETCH", "$USN_JOURNAL"]
+
+        if side == "left":
+            source = self.left_source_var.get()
+            container = self.left_macb_container
+        else:
+            source = self.right_source_var.get()
+            container = self.right_macb_container
+    
+        enable = (source in allowed)
+
+        def safe_set_state(widget, state):
+            """Set state only on widgets that support it."""
+            try:
+                widget.configure(state=state)
+            except:
+                pass
+
+        # Recursively walk all children inside container
+        def walk_widgets(parent):
+            for child in parent.winfo_children():
+                safe_set_state(child, "normal" if enable else "disabled")
+                walk_widgets(child)
+
+        walk_widgets(container)
+
     def create_widgets(self):
         """Create all widgets in the modal."""
         self.main_frame = ttk.Frame(self.modal, padding="15")
@@ -2485,11 +2513,11 @@ class CustomRuleBuilder:
         self.left_source_combo = ttk.Combobox(self.main_frame, textvariable=self.left_source_var,
                                              values=self.sources, state="readonly", width=25)
         self.left_source_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=(5, 0))
-        self.left_source_var.trace('w', lambda *args: (self.render_macb_ui("left"), self.update_preview(), self.auto_resize()))
+        self.left_source_var.trace('w', lambda *args: (self.render_macb_ui("left"), self.update_finetune_state("left"), self.update_preview(), self.auto_resize()))
         
         # Left MACB Filter
         row += 1
-        ttk.Label(self.main_frame, text="Left MACB Filter (optional):").grid(row=row, column=0, sticky=tk.W, pady=5)
+        ttk.Label(self.main_frame, text="Fine-tuned Parameters:").grid(row=row, column=0, sticky=tk.W, pady=5)
         self.left_macb_container = ttk.Frame(self.main_frame)
         self.left_macb_container.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=(5, 0))
         self.left_macb_var = tk.StringVar(value="")
@@ -2498,6 +2526,7 @@ class CustomRuleBuilder:
         self.left_usn_mode = tk.StringVar(value="lax")
         self.left_usn_reason_vars = {reason: tk.BooleanVar(value=False) for reason in self.usn_reasons}
         self.render_macb_ui("left")
+        self.update_finetune_state("left")  # Disable second box on fresh launch
         
         # Operator
         row += 1
@@ -2515,11 +2544,11 @@ class CustomRuleBuilder:
         self.right_source_combo = ttk.Combobox(self.main_frame, textvariable=self.right_source_var,
                                               values=self.sources, state="readonly", width=25)
         self.right_source_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=(5, 0))
-        self.right_source_var.trace('w', lambda *args: (self.render_macb_ui("right"), self.update_preview(), self.auto_resize()))
+        self.right_source_var.trace('w', lambda *args: (self.render_macb_ui("right"), self.update_finetune_state("right"), self.update_preview(), self.auto_resize()))
         
         # Right MACB Filter
         row += 1
-        ttk.Label(self.main_frame, text="Right MACB Filter (optional):").grid(row=row, column=0, sticky=tk.W, pady=5)
+        ttk.Label(self.main_frame, text="Fine-tuned Parameters:").grid(row=row, column=0, sticky=tk.W, pady=5)
         self.right_macb_container = ttk.Frame(self.main_frame)
         self.right_macb_container.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5, padx=(5, 0))
         self.right_macb_var = tk.StringVar(value="")
@@ -2528,7 +2557,8 @@ class CustomRuleBuilder:
         self.right_usn_mode = tk.StringVar(value="lax")
         self.right_usn_reason_vars = {reason: tk.BooleanVar(value=False) for reason in self.usn_reasons}
         self.render_macb_ui("right")
-        
+        self.update_finetune_state("right")
+
         # BOOT_SESSIONS Check
         row += 1
         self.boot_sessions_var = tk.BooleanVar(value=False)
