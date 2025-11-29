@@ -1,30 +1,133 @@
 rules:
-- id: TS_008
-  name: UserAssist Execution Before Creation/Metachange
-  description: UserAssist registry evidence shows execution before file exists (MFT
-    creation and/or metachange).
-  severity: HIGH
-  targets:
-  - '*'
-  logic:
-    any_of:
-    - condition: datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.creation)
-    - condition: datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.metachange)
-  explanation: 'UserAssist entries are updated when programs are actually launched
-    via Windows Explorer or Start Menu.
+  # - id: TS001
+  #   name: "Execution-before-Creation"
+  #   description: "File executed before any creation evidence exists."
+  #   severity: "High"
 
-    '
-- id: TS006
-  name: Modified+Metachange Before Creation
-  severity: High
-  explanation: "Both $MFT modified+metachange (m.c.) is earlier than $MFT creation\
-    \ (...b). Highly suspicious.\n\n Windows copy/paste and restore can cause single-modified\
-    \ or single-metachange timestamps before creation, but 'modified+metachange' before\
-    \ creation is not typical of any normal Windows operation. This strengthens the\
-    \ signal for timestomping regardless of path/location."
-  logic:
-    all_of:
-    - condition: datetime($MFT.modified_metachange) < datetime($MFT.creation)
-    - condition: datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE, mode=lax) < datetime($MFT.creation)
-  targets:
-  - '*'
+  #   targets:
+  #   - "*"
+
+  #   logic:
+  #     any_of:
+  #       - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='.a..')"
+  #     explanation: "Execution evidence predates file creation - possible timestomping."
+
+  # - id: TS002
+  #   name: "Modification-During-Power-Off"
+  #   severity: "Critical"
+
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime($MFT, macb='...b') not between (BOOT_SESSIONS)"
+  #       - condition: "datetime(PREFETCH) not between (BOOT_SESSIONS)"
+  #     explanation: "File modified when system was powered off."
+
+  # - id: TS003
+  #   name: "Prefetch-Execution-During-Logoff"
+  #   severity: "High"
+
+  #   targets:
+  #   - "users/timel/desktop/cases/creation_future.exe"
+  
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime(PREFETCH.datetime) not between (AUTH_SESSIONS)"
+  #     explanation: "File executed (Prefetch) when system was powered off."
+
+  # - id: TS004
+  #   name: "Execution-before-Creation"
+  #   description: "File executed before any creation evidence exists."
+  #   severity: "High"
+
+  #   targets:
+  #   - "*"
+
+  #   logic:
+  #     any_of:
+  #       - condition: "datetime(PREFETCH) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(AMCACHE) < datetime($MFT, macb='...b')"
+  #       - condition: "datetime(APPCOMPATCACHE) < datetime($MFT, macb='...b')"
+  #     explanation: "Execution evidence predates file creation - possible timestomping."
+
+  - id: TS005
+    name: "Test"
+    description: "File executed before any creation evidence exists."
+    severity: "High"
+
+    targets:
+    - "*"
+    # - "users/timel/desktop/cases/creation_future.exe"
+
+    # Possible normalized timeframe for rule engine parsing
+    # timeframe: "> 2025-10-01"
+    # timeframe: ">= 2025-01-30 and <= 2026-05-31"
+    # timeframe: ">= 2026-10-01 23:59:59"
+    # timeframe: ">= 2024-01-01 and <= 2026-06-02"
+
+    logic:
+      any_of:
+        # - condition: "datetime(PREFETCH.firstrun) < datetime($MFT.modified_metachange)"
+        # - condition: "datetime(AMCACHE.datetime) < datetime($MFT.modified_metachange)"
+        # - condition: "datetime(APPCOMPATCACHE.datetime) < datetime($MFT.modified_metachange)"
+        - condition: "datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE) < datetime($MFT.creation)"
+      explanation: "Execution evidence predates file creation - possible timestomping."
+
+  # - id: TS_006
+  #   name: "Modified+Metachange Before Creation"
+  #   description: "Both $MFT modified+metachange (m.c.) is earlier than $MFT creation (...b). Highly suspicious."
+  #   severity: "HIGH"
+  #   targets:
+  #     - "*"
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime($MFT.modified_metachange) < datetime($MFT.creation)"
+  #       - condition: "datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE, mode=lax) < datetime($MFT.creation)"
+  #     explanation: |
+  #       Windows copy/paste and restore can cause single-modified or single-metachange timestamps before creation,
+  #       but 'modified+metachange' before creation is not typical of any normal Windows operation.
+  #       This strengthens the signal for timestomping regardless of path/location.
+
+  # - id: TS_007
+  #   name: "USN Multi-Artifact Before Creation"
+  #   description: "USN Journal security/close events are earlier than both $MFT creation/metachange and PCA_LOG execution."
+  #   severity: "HIGH"
+  #   targets:
+  #     - "*"
+  #   logic:
+  #     all_of:
+  #       - condition: "datetime($USN_JOURNAL.USN_REASON_SECURITY_CHANGE) < datetime($MFT.creation)"
+  #       - condition: "datetime($USN_JOURNAL.USN_REASON_SECURITY_CHANGE) < datetime($MFT.metachange)"
+  #       - condition: "datetime($USN_JOURNAL.USN_REASON_SECURITY_CHANGE) < datetime(PCA_LOG.datetime)"
+  #   explanation: |
+  #     When USN Journal events precede both NTFS file birth and program compatibility execution,
+  #     this indicates cross-artifact timestamp forgery.
+
+  # - id: TS_008
+  #   name: "UserAssist Execution Before Creation/Metachange"
+  #   description: "UserAssist registry evidence shows execution before file exists (MFT creation and/or metachange)."
+  #   severity: "HIGH"
+  #   targets:
+  #     - "*"
+  #   logic:
+  #     any_of:
+  #       - condition: "datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.creation)"
+  #       - condition: "datetime(USERASSIST_REGKEY.datetime) < datetime($MFT.metachange)"
+  #   explanation: |
+  #     UserAssist entries are updated when programs are actually launched via Windows Explorer or Start Menu.
+
+  # # USN Journal Before MFT Birth
+  # - id: TS_009
+  #   name: "USN-Before-MFT-Birth"
+  #   description: "USN Journal shows file system activity before $MFT shows file creation"
+  #   severity: "HIGH"
+  #   targets:
+  #     - "*"
+  #   logic:
+  #     any_of:
+  #       - condition: "datetime($USN_JOURNAL.USN_REASON_BASIC_INFO_CHANGE|USN_REASON_CLOSE) < datetime($MFT.creation)"
+  #   explanation: "Change journal records filesystem operations before file officially existed in MFT - temporal impossibility"
+
+
+
